@@ -29,8 +29,6 @@ namespace NanoORM.MySQL
 
         public int Insert(object obj)
         {
-            string query = string.Empty;
-            string query2 = string.Empty;
             Type t = obj.GetType();
             var fields = t.GetFields();
             string primaryKey = string.Empty;
@@ -38,8 +36,21 @@ namespace NanoORM.MySQL
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-            query += string.Format(@"INSERT INTO `{0}`(", tableName);
-            query2 += string.Format(@"VALUE(");
+
+            var query = BuildInsertQuery(obj, tableName, fields, primaryKey);
+
+            SQLResultData resultData = MySqlDb.SqlReturnDataset(query,
+                                                                ConnectionString);
+            if (resultData.HasError)
+                throw new Exception(resultData.ErrorText);
+            Debug.WriteLine(query);
+            return int.Parse(resultData.ResultData.Rows[0].ItemArray[0].ToString());
+        }
+
+        private static string BuildInsertQuery(object obj, string tableName, IEnumerable<FieldInfo> fields, string primaryKey)
+        {
+            string query = string.Format(@"INSERT INTO `{0}`(", tableName);
+            string query2 = string.Format(@"VALUE(");
             foreach (FieldInfo field in fields)
             {
                 if (field.Name == primaryKey)
@@ -49,18 +60,12 @@ namespace NanoORM.MySQL
                 if (field.FieldType == typeof (string))
                     tmpl = @"'{0}',";
                 string value = field.GetValue(obj).ToString();
-                query2 += string.Format(tmpl, value.Replace(",","."));
+                query2 += string.Format(tmpl, value.Replace(",", "."));
             }
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + ")";
-            query2 = query2.Remove(query2.LastIndexOf(",", StringComparison.Ordinal),1)+");";
-            query += query2 + "SELECT LAST_INSERT_ID();";
-
-            SQLResultData resultData = MySqlDb.SqlReturnDataset(query,
-                                                                ConnectionString);
-            if (resultData.HasError)
-                throw new Exception(resultData.ErrorText);
-            Debug.WriteLine(query);
-            return int.Parse(resultData.ResultData.Rows[0].ItemArray[0].ToString());
+            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) + ")";
+            query2 = query2.Remove(query2.LastIndexOf(",", StringComparison.Ordinal), 1) + ");";
+            query += query2 + @"SELECT LAST_INSERT_ID();";
+            return query;
         }
 
         public T Select<T>(int id) where T : new()
@@ -85,14 +90,21 @@ namespace NanoORM.MySQL
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-            string query = string.Format(@"SELECT ");
             var fields = t.GetFields();
-            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
 
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) + string.Format(" FROM `{0}` WHERE {1} = {2} LIMIT 1", tableName, primaryKey, id);
+            var query = BuildSelectOneQuery(id, fields, tableName, primaryKey);
             Debug.WriteLine(query);
 
             return GetDbRow<T>(query, fields, obj);
+        }
+
+        private static string BuildSelectOneQuery(int id, IEnumerable<FieldInfo> fields, string tableName, string primaryKey)
+        {
+            string query = string.Format(@"SELECT ");
+            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
+            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) +
+                    string.Format(@" FROM `{0}` WHERE `{0}`.`{1}` = {2} LIMIT 1", tableName, primaryKey, id);
+            return query;
         }
 
         private void getAttributes(Type t, ref string primaryKey, ref string tableName)
@@ -133,14 +145,21 @@ namespace NanoORM.MySQL
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-            string query = string.Format(@"SELECT ");
             var fields = t.GetFields();
-            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
 
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + string.Format(" FROM `{0}` {1} LIMIT 1", tableName, where);
+            var query = BuildSelectOneQuery(@where, fields, tableName);
             Debug.WriteLine(query);
 
             return GetDbRow<T>(query, fields, obj);
+        }
+
+        private static string BuildSelectOneQuery(string @where, IEnumerable<FieldInfo> fields, string tableName)
+        {
+            string query = string.Format(@"SELECT ");
+            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
+            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) +
+                    string.Format(@" FROM `{0}` {1} LIMIT 1", tableName, @where);
+            return query;
         }
 
         private T GetDbRow<T>(string query, IEnumerable<FieldInfo> fields, object obj) where T : new()
@@ -168,29 +187,7 @@ namespace NanoORM.MySQL
         /// <exception cref="System.Exception"></exception>
         public List<T> SelectAll<T>() where T : new()
         {
-            Type t = typeof(T);
-            string tableName = string.Empty;
-            string primaryKey = string.Empty;
-            getAttributes(t, ref primaryKey, ref tableName);
-            if (tableName == string.Empty)
-                tableName = t.Name;
-            string query = string.Format(@"SELECT ");
-            var fields = t.GetFields();
-            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + string.Format(" FROM `{0}`", tableName);
-            Debug.WriteLine(query);
-            SQLResultData resultData = MySqlDb.SqlReturnDataset(query, ConnectionString);
-            if (resultData.HasError)
-                throw new Exception(resultData.ErrorText);
-            var list = new List<T>();
-            foreach (DataRow row in resultData.ResultData.Rows)
-            {
-                var item = new T();
-                foreach (FieldInfo field in fields)
-                    field.SetValue(item, row[field.Name]);
-                list.Add(item);
-            }
-            return list;
+            return SelectList<T>(string.Empty);
         }
 
         /// <summary>
@@ -208,10 +205,9 @@ namespace NanoORM.MySQL
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-            string query = string.Format(@"SELECT ");
             var fields = t.GetFields();
-            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + string.Format(" FROM `{0}` {1}", tableName, where);
+
+            var query = BuildSelectListQuery(@where, fields, tableName);
             Debug.WriteLine(query);
             SQLResultData resultData = MySqlDb.SqlReturnDataset(query, ConnectionString);
             if (resultData.HasError)
@@ -225,6 +221,15 @@ namespace NanoORM.MySQL
                 list.Add(item);
             }
             return list;
+        }
+
+        private static string BuildSelectListQuery(string @where, IEnumerable<FieldInfo> fields, string tableName)
+        {
+            string query = string.Format(@"SELECT ");
+            query = fields.Aggregate(query, (current, field) => current + string.Format(@"`{1}`.`{0}`,", field.Name, tableName));
+            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) +
+                    string.Format(@" FROM `{0}` {1}", tableName, @where);
+            return query;
         }
 
         /// <summary>
@@ -260,7 +265,7 @@ namespace NanoORM.MySQL
                 query += string.Format(tmpl, tableName, field.Name, value.Replace(",","."));
             }
 
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + string.Format("  WHERE `{0}` = {1}", primaryKey, id);
+            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + string.Format(@"  WHERE `{0}` = {1}", primaryKey, id);
             Debug.WriteLine(query);
             SQLResult result = MySqlDb.SqlNoneQuery(query, ConnectionString);
             if (result.HasError)
@@ -508,36 +513,6 @@ namespace NanoORM.MySQL
             set;
         }
     }
-
-/*
-    /// <summary>
-    /// Класс запроса к БД через сервер
-    /// </summary>
-    [Serializable]
-    public class SQLQuery
-    {
-        /// <summary>
-        /// Флаг типа запроса
-        /// </summary>
-        /// <value>
-        ///   <c>true</c> Без возращаемых данных <c>false</c> с данными.
-        /// </value>
-        public bool NoData
-        {
-            get;
-            set;
-        }
-
-        /// <summary>
-        /// Строка запроса
-        /// </summary>
-        public string Query
-        {
-            get;
-            set;
-        }
-    }
-*/
 
     #endregion DataResultClasses
 
