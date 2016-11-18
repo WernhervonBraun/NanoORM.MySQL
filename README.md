@@ -56,6 +56,16 @@ Net Compact Framework 3.5
 
 	TestClass testClass = orm.Select<TestClass>("WHERE `id` = " + Id);//Возвращает первую строку отвещающую заданным параметрам.
 
+Выборка списка:
+
+	var list = new List<TestClass>;
+	list = orm.SelectList<TestClass>("WHERE `id` < " + Id);
+
+Выборка всего:
+
+	var list = new List<TestClass>;
+	list = orm.SelectAll<TestClass>();
+
 Обновление:
 
 	TestClass testClass = orm.Select<TestClass>(Id);
