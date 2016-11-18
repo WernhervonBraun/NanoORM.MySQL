@@ -33,6 +33,7 @@ Net Compact Framework 3.5
     }
 
 Настройка подключения:
+
     var orm = new NanoOrm
             {
                 ConnectionString =
