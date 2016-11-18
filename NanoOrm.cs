@@ -14,7 +14,7 @@ using System.Reflection;
 using MySql.Data.MySqlClient;
 
 // ReSharper disable once CheckNamespace
-namespace NanoORM.MySQL
+namespace NanoORM
 {
     #region ORM
 
@@ -25,7 +25,11 @@ namespace NanoORM.MySQL
         /// </summary>
         public string ConnectionString = string.Empty;
 
-        readonly MySqlData MySqlDb = new MySqlData();
+        /// <summary>
+        /// Объект реализующий доступ 
+        /// и получение данных из БД
+        /// </summary>
+        public IDatabaseData Db = new MySqlData();
 
         public int Insert(object obj)
         {
@@ -36,10 +40,8 @@ namespace NanoORM.MySQL
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-
             var query = BuildInsertQuery(obj, tableName, fields, primaryKey);
-
-            SQLResultData resultData = MySqlDb.SqlReturnDataset(query,
+            SQLResultData resultData = Db.SqlReturnDataset(query,
                                                                 ConnectionString);
             if (resultData.HasError)
                 throw new Exception(resultData.ErrorText);
@@ -91,7 +93,6 @@ namespace NanoORM.MySQL
             if (tableName == string.Empty)
                 tableName = t.Name;
             var fields = t.GetFields();
-
             var query = BuildSelectOneQuery(id, fields, tableName, primaryKey);
             Debug.WriteLine(query);
 
@@ -146,7 +147,6 @@ namespace NanoORM.MySQL
             if (tableName == string.Empty)
                 tableName = t.Name;
             var fields = t.GetFields();
-
             var query = BuildSelectOneQuery(@where, fields, tableName);
             Debug.WriteLine(query);
 
@@ -164,7 +164,7 @@ namespace NanoORM.MySQL
 
         private T GetDbRow<T>(string query, IEnumerable<FieldInfo> fields, object obj) where T : new()
         {
-            SQLResultData result = MySqlDb.SqlReturnDataset(query, ConnectionString);
+            SQLResultData result = Db.SqlReturnDataset(query, ConnectionString);
             if (result.HasError)
                 throw new Exception(result.ErrorText);
             if (obj == null)
@@ -206,10 +206,9 @@ namespace NanoORM.MySQL
             if (tableName == string.Empty)
                 tableName = t.Name;
             var fields = t.GetFields();
-
             var query = BuildSelectListQuery(@where, fields, tableName);
             Debug.WriteLine(query);
-            SQLResultData resultData = MySqlDb.SqlReturnDataset(query, ConnectionString);
+            SQLResultData resultData = Db.SqlReturnDataset(query, ConnectionString);
             if (resultData.HasError)
                 throw new Exception(resultData.ErrorText);
             var list = new List<T>();
@@ -240,13 +239,11 @@ namespace NanoORM.MySQL
         public void Update(object obj)
         {
             Type t = obj.GetType();
-
             string tableName = string.Empty;
             string primaryKey = string.Empty;
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-
             string query = string.Format(@"UPDATE `{0}` SET ", tableName);
             var fields = t.GetFields();
             var id = 0;
@@ -257,7 +254,6 @@ namespace NanoORM.MySQL
                     id = int.Parse(field.GetValue(obj).ToString());
                     continue;
                 }
-                    
                 string tmpl = @"`{0}`.`{1}` = {2},";
                 if (field.FieldType == typeof (string))
                     tmpl = @"`{0}`.`{1}` = '{2}',";
@@ -267,7 +263,7 @@ namespace NanoORM.MySQL
 
             query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal),1) + string.Format(@"  WHERE `{0}` = {1}", primaryKey, id);
             Debug.WriteLine(query);
-            SQLResult result = MySqlDb.SqlNoneQuery(query, ConnectionString);
+            SQLResult result = Db.SqlNoneQuery(query, ConnectionString);
             if (result.HasError)
                 throw new Exception(result.ErrorText);
         }
@@ -281,7 +277,6 @@ namespace NanoORM.MySQL
             getAttributes(t, ref primaryKey, ref tableName);
             if (tableName == string.Empty)
                 tableName = t.Name;
-
             var fields = t.GetFields();
             var id = 0;
             foreach (FieldInfo field in fields)
@@ -292,7 +287,7 @@ namespace NanoORM.MySQL
             }
             string query = string.Format(@"DELETE FROM `{0}` WHERE  `{1}` = {2}",tableName, primaryKey, id);
             Debug.WriteLine(query);
-            SQLResult result = MySqlDb.SqlNoneQuery(query, ConnectionString);
+            SQLResult result = Db.SqlNoneQuery(query, ConnectionString);
             if (result.HasError)
                 throw new Exception(result.ErrorText);
         }
@@ -347,7 +342,7 @@ namespace NanoORM.MySQL
             }
             query += string.Format(@"PRIMARY KEY (`{0}`))", primaryKey);
             Debug.WriteLine(query);
-            SQLResult result = MySqlDb.SqlNoneQuery(query, ConnectionString);
+            SQLResult result = Db.SqlNoneQuery(query, ConnectionString);
             if (result.HasError)
                 throw new Exception(result.ErrorText);
         }
@@ -387,7 +382,7 @@ namespace NanoORM.MySQL
 
     #region MysqlQuery
 
-    public class MySqlData
+    public class MySqlData : IDatabaseData
     {
         /// <summary>
         /// Для выполнения запросов к MySQL без возвращения параметров.
@@ -543,6 +538,25 @@ namespace NanoORM.MySQL
         /// Возвращаемые данные
         /// </summary>
         DataTable ResultData { get; set; }
+    }
+
+    public interface IDatabaseData
+    {
+        /// <summary>
+        /// Для выполнения запросов к MySQL без возвращения параметров.
+        /// </summary>
+        /// <param name="sql">Текст запроса к базе данных</param>
+        /// <param name="connection">Строка подключения к базе данных</param>
+        /// <returns>Возвращает True - ошибка или False - выполнено успешно.</returns>
+        SQLResult SqlNoneQuery(string sql, string connection);
+
+        /// <summary>
+        /// Выполняет запрос выборки набора строк.
+        /// </summary>
+        /// <param name="sql">Текст запроса к базе данных</param>
+        /// <param name="connection">Строка подключения к базе данных</param>
+        /// <returns>Возвращает набор строк в DataSet.</returns>
+        SQLResultData SqlReturnDataset(string sql, string connection);
     }
 
     #endregion Interfaces
