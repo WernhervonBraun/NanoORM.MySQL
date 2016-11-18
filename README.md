@@ -1,12 +1,12 @@
 # NanoORM.MySQL
 
-Микро ORM для MySQL.
+Однофайловая Микро ORM для MySQL.
 
 Net Framework 3.5+
 
 Net Compact Framework 3.5
 
-Время выполнения запросов для Casio DT-X8 (624 MHz, 128 Mb, Windows CE):
+Время выполнения запросов для ТСД Casio DT-X8 (624 MHz, 128 Mb, Windows CE 6.0):
 
     //Insert 100 rows
     Insert TestClass: All: 7762 ms  One: ~77 ms
