@@ -26,9 +26,11 @@ Query execution time for Handheld Terminal Casio DT-X8 (624 MHz, 128 Mb, Windows
     SelectAll TestClass: All 1118 ms One: ~1 ms Count rows: 1100
 
 Примеры
+
 Examples  
  
 Тестовый класс:
+
 Test class : 
 
     [TableName("NameTable")] //Необязательный атрибут. Если не указывать, то будет использоваться таблица имеющая одинаковое имя с классом
@@ -40,6 +42,7 @@ Test class :
     }
 
 Настройка подключения:
+
 Configuring the connection:  
 
     var orm = new NanoOrm
@@ -49,6 +52,7 @@ Configuring the connection:
             };
 
 Добавление объекта в базу:
+
 Adding an object to the database: 
 
     TestClass testClass = new TestClass
@@ -58,28 +62,33 @@ Adding an object to the database:
     int insertId = orm.Insert(testClass);
 	
 Выборка:
+
 Selection: 
 
 	TestClass testClass = orm.Select<TestClass>(Id);
 
 или
+
 or
 
 	TestClass testClass = orm.Select<TestClass>("WHERE `id` = " + Id);//Возвращает первую строку отвещающую заданным параметрам.
 
 Выборка списка:
+
 Selection list: 
 
 	var list = new List<TestClass>;
 	list = orm.SelectList<TestClass>("WHERE `id` < " + Id);
 
 Выборка всего:
+
 Selection all: 
 
 	var list = new List<TestClass>;
 	list = orm.SelectAll<TestClass>();
 
 Обновление:
+
 Update:
 
 	TestClass testClass = orm.Select<TestClass>(Id);
@@ -87,6 +96,7 @@ Update:
 	orm.Update(testClass);
 
 Удаление:
+
 Delete:
 
 	TestClass testClass = orm.Select<TestClass>(Id);
