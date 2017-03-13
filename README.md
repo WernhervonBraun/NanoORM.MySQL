@@ -37,7 +37,7 @@ Test class :
     [PrimaryKey("Id")] //[PrimaryKey("Id")] - Обязательно указание поля первичного ключа
     class TestClass
     {
-        public uint Id; //Поле PrimaryKey всегда uint
+        public ulong Id; //Поле PrimaryKey всегда ulong
         public string TestData;
     }
 
@@ -59,7 +59,7 @@ Adding an object to the database:
     {
 	    TestData = "test string";
     }
-    int insertId = orm.Insert(testClass);
+    ulong insertId = orm.Insert(testClass);
 	
 Выборка:
 
