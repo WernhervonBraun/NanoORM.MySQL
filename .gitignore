@@ -45,3 +45,6 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+/NanoOrmMySQL/NanoOrmMySQL/obj/Debug
+/NanoOrmMySQL/packages/MySql.Data.6.9.9
+/NanoOrmMySQL/.vs/NanoOrmMySQL/v15
