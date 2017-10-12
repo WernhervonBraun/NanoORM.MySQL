@@ -15,8 +15,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Diagnostics;
 
-// ReSharper disable once CheckNamespace
-namespace NanoORM
+namespace NanoOrmMySQL
 {
     public class NanoOrm
     {
@@ -25,6 +24,9 @@ namespace NanoORM
         /// </summary>
         public string LastQuery { get; private set; }
 
+        /// <summary>
+        /// СТрока подключения
+        /// </summary>
         public string ConnectionString { get; }
 
         /// <summary>
@@ -366,9 +368,9 @@ namespace NanoORM
 
                 var colName = GetColName(property);
 
-                var tmpl = "{0} = {1},";
+                var tmpl = "`{0}` = {1},";
                 if (IsString(property))
-                    tmpl = "{0} = '{1}',";
+                    tmpl = "`{0}` = '{1}',";
                 var value = property.GetValue(obj, null);
                 value = ConvertValue(property, value);
                 if (!IsString(property))
@@ -409,6 +411,10 @@ namespace NanoORM
             CommitTransaction();
         }
 
+        /// <summary>
+        /// Сохраняет объект в базе
+        /// </summary>
+        /// <param name="obj">Объект</param>
         public void Insert(object obj)
         {
             var type = obj.GetType();
@@ -441,13 +447,9 @@ namespace NanoORM
                 if (IsString(property))
                     tmpl = "'{0}',";
                 if (value == null && IsString(property))
-                {
                     value = string.Empty;
-                }
                 else
-                {
                     value = ConvertValue(property, value);
-                }
                 if (!IsString(property))
                     query2 += string.Format(tmpl, value.ToString().Replace(",", "."));
                 else
@@ -456,18 +458,15 @@ namespace NanoORM
             query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) + ")";
             query2 = query2.Remove(query2.LastIndexOf(",", StringComparison.Ordinal), 1) + ");";
             query += query2 + "SELECT LAST_INSERT_ID();";
-            //Debug.WriteLine(query);
             var sqlres = ExecuteData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
             foreach (var property in type.GetProperties())
-            {
                 if (IsPrimaryKey(property))
                 {
-                    sqlres.Table.Rows[0].ItemArray[0].SetPropertyValue(property, obj);
+                    property.SetPropertyValue(sqlres.Table.Rows[0].ItemArray[0], obj);
                     break;
                 }
-            }
         }
 
         /// <summary>
@@ -516,7 +515,7 @@ namespace NanoORM
             sb.AppendFormat("CREATE TABLE IF NOT EXISTS {0} (", tableName).AppendLine();
             foreach (var property in type.GetProperties())
             {
-                var colName = property.Name;
+                var colName = GetColName(property);
                 if (IsNoMapAttribute(property))
                     continue;
                 bool primaryKey = IsPrimaryKey(property);
@@ -529,13 +528,10 @@ namespace NanoORM
                 att = property.GetCustomAttributes(typeof(Indexed), true);
                 if (att != null && att.Length != 0) indexList.Add(colName);
 
-                colName = GetColName(property);
                 var colType = GetColType(property);
                 sb.AppendFormat("\t`{0}` {1}", colName, colType);
                 if (primaryKey)
-                {
                     primaryKeyText = string.Format(" PRIMARY KEY(`{0}`)", colName);
-                }
                 if (autoIncrement)
                     sb.Append(" AUTO_INCREMENT");
                 if (notNull)
@@ -544,11 +540,7 @@ namespace NanoORM
             }
             sb.Append(primaryKeyText).Append(");");
             var query = sb.ToString();
-            //query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) + ");";
-
             query = indexList.Aggregate(query, (current, colindex) => current + string.Format("CREATE INDEX  IF NOT EXISTS name_{0} ON {1}({2});", colindex, tableName, colindex));
-
-            //Debug.WriteLine(query);
             var sqlres = ExecuteNoData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
@@ -577,6 +569,75 @@ namespace NanoORM
                 throw new Exception(sqlres.Message);
         }
 
+        /// <summary>
+        /// Возвращает таблицу в виде sql строки для сохранения как бекап
+        /// </summary>
+        /// <typeparam name="T">Тип</typeparam>
+        /// <returns>строка</returns>
+        public string Backup<T>() where T : new()
+        {
+            var tableName = GetTableName(typeof(T));
+            return BackupTable(tableName);
+        }
+
+        /// <summary>
+        /// Возвращает таблицу в виде sql строки для сохранения как бекап
+        /// </summary>
+        /// <param name="tblName">Название таблицы</param>
+        /// <returns>Строка</returns>
+        public string BackupTable(string tblName)
+        {
+            var fileText = new StringBuilder();
+            fileText.AppendLine(string.Concat("DROP TABLE IF EXISTS `", tblName, "`;"));
+            var query = $"SHOW CREATE TABLE `{tblName}`;";
+            var sqlRaw = ExecuteData(query);
+            if (sqlRaw.HasError)
+                throw new Exception(sqlRaw.Message);
+            fileText.AppendLine(sqlRaw.Table.Rows[0].ItemArray[1] + ";");
+            fileText.AppendLine($"LOCK TABLES `{tblName}` WRITE;");
+            var raw2 = ExecuteData(string.Concat("SELECT * FROM `", tblName, "`"));
+            string beginLine = string.Concat("INSERT INTO `", tblName, "`");
+            var sb = new StringBuilder();
+            int j = 0;
+
+            foreach (DataRow row in raw2.Table.Rows)
+            {
+                string line = string.Empty;
+                if (j == 0)
+                {
+                    line += string.Concat(beginLine, " VALUES");
+                }
+                line += " (";
+                int colCount = row.ItemArray.Length;
+                for (int i = 0; i < colCount; i++)
+                {
+                    string value = row[i].ToString();
+                    Type t = row[i].GetType();
+                    if (t == typeof(string))
+                        value = string.Concat("'", value.Replace("\r", string.Empty).Replace("\n", string.Empty), "'");
+                    line += value;
+                    if (i < colCount - 1)
+                        line += ",";
+                }
+                line += ")";
+                if (j == 1000)
+                {
+                    sb.Append(line);
+                    fileText.AppendLine(sb + ";");
+                    sb = new StringBuilder();
+                    j = 0;
+                    continue;
+                }
+                line += ",";
+                sb.Append(line);
+                j++;
+            }
+            if (sb.Length != 0)
+                fileText.AppendLine(sb.ToString(0, sb.Length - 1) + ";");
+            fileText.AppendLine("UNLOCK TABLES;");
+            return fileText.ToString();
+        }
+
         #endregion ORM
 
         #region Private Methods
@@ -603,7 +664,8 @@ namespace NanoORM
                 if (IsNoMapAttribute(property))
                     continue;
                 var colName = GetColName(property);
-                row[colName].SetPropertyValue(property, res);
+                //row[colName].SetPropertyValue(property, res);
+                property.SetPropertyValue(row[colName], res);
             }
 
             return res;
@@ -1017,34 +1079,21 @@ namespace NanoORM
         /// <param name="val">Объект значения</param>
         /// <param name="property">Свойство</param>
         /// <param name="obj">Целевой объект</param>
-        public static void SetPropertyValue(this object val, PropertyInfo property, object obj)
+        public static void SetPropertyValue(this PropertyInfo property, object val, object obj)
         {
             if (property.PropertyType == typeof(DateTime))
                 property.SetValue(obj, ((double)val).ConvertFromUnixTimestamp(), null);
             else if (property.PropertyType == typeof(bool))
                 property.SetValue(obj, val.ToString() == "1", null);
-            else if (property.PropertyType == typeof(int))
-                property.SetValue(obj, Convert.ToInt32(val), null);
-            else if (property.PropertyType == typeof(uint))
-                property.SetValue(obj, Convert.ToUInt32(val), null);
-            else if (property.PropertyType == typeof(long))
-                property.SetValue(obj, Convert.ToInt64(val), null);
-            else if (property.PropertyType == typeof(ulong))
-                property.SetValue(obj, Convert.ToUInt64(val), null);
-            else if (property.PropertyType == typeof(sbyte))
-                property.SetValue(obj, Convert.ToInt32(val), null);
-            else if (property.PropertyType == typeof(float))
-                property.SetValue(obj, Convert.ToSingle(val), null);
-            else if (property.PropertyType == typeof(double))
-                property.SetValue(obj, Convert.ToDouble(val), null);
             else if (property.PropertyType == typeof(byte[]))
                 property.SetValue(obj, Convert.FromBase64String(val.ToString()), null);
-            else if (property.PropertyType == typeof(string))
-                property.SetValue(obj, val.ToString(), null);
             else if (property.PropertyType == typeof(Guid))
                 property.SetValue(obj, new Guid(val.ToString()), null);
+            else if (property.PropertyType == typeof(string))
+                property.SetValue(obj, val.ToString(), null);
             else
-                property.SetValue(obj, val, null);
+                property.SetValue(obj, Convert.ChangeType(val, property.PropertyType, null), null);
+            //property.SetValue(obj, val, null);
         }
 
         /// <summary>
@@ -1268,8 +1317,16 @@ namespace NanoORM
         {
             var body = member.Body as UnaryExpression;
             if (body == null)
-                throw new Exception(string.Format("member not MemberExpression: {0}", member));
-            _Groups.Add(((MemberExpression)body.Operand).Member.Name);
+            {
+                var mem = member.Body as MemberExpression;
+                if (mem == null)
+                    throw new Exception(string.Format("member not MemberExpression: {0}", member));
+                _Groups.Add(mem.Member.Name);
+            }
+            else
+            {
+                _Groups.Add(((MemberExpression)body.Operand).Member.Name);
+            }
             return this;
         }
 
@@ -1281,12 +1338,7 @@ namespace NanoORM
         public SQLQuery<T> GroupBy(params Expression<Func<T, object>>[] members)
         {
             foreach (var member in members)
-            {
-                var body = member.Body as UnaryExpression;
-                if (body == null)
-                    throw new Exception(string.Format("member not MemberExpression: {0}", member));
-                _Groups.Add(((MemberExpression)body.Operand).Member.Name);
-            }
+                GroupBy(member);
             return this;
         }
 
