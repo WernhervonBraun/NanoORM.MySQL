@@ -8,26 +8,24 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
-using System.Reflection;
-using MySql.Data.MySqlClient;
-using System.Text;
 using System.Linq;
 using System.Linq.Expressions;
-using System.Diagnostics;
+using System.Reflection;
+using System.Text;
+using MySql.Data.MySqlClient;
 
-namespace NanoOrmMySQL
+namespace NanoORMMySQL
 {
-    public class NanoOrm
+    public class NanoOrm : IDisposable
     {
         /// <summary>
         /// Последний запрос к базе данных
         /// </summary>
         public string LastQuery { get; private set; }
 
-        /// <summary>
-        /// СТрока подключения
-        /// </summary>
-        public string ConnectionString { get; }
+        public string ConnectionString { get; private set; }
+
+        public MySqlConnection Connection { get; private set; }
 
         /// <summary>
         /// Конструктор
@@ -39,6 +37,75 @@ namespace NanoOrmMySQL
         }
 
         #region ORM
+
+        /// <summary>
+        /// Возращает строку для бекапа таблицы
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        public string Backup<T>() where T : new()
+        {
+            var tableName = GetTableName(typeof(T));
+            return BackupTable(tableName);
+        }
+
+        /// <summary>
+        /// Возращает строку для бекапа таблицы
+        /// </summary>
+        /// <param name="tblName">Имя таблицы</param>
+        /// <returns></returns>
+        public string BackupTable(string tblName)
+        {
+            var fileText = new StringBuilder();
+            fileText.AppendLine(string.Concat("DROP TABLE IF EXISTS `", tblName, "`;"));
+            var query = string.Format("SHOW CREATE TABLE `{0}`", tblName);
+            var sqlRaw = ExecuteData(query);
+            if (sqlRaw.HasError)
+                throw new Exception(sqlRaw.Message);
+            fileText.Append(sqlRaw.Table.Rows[0].ItemArray[1]).AppendLine(";");
+            fileText.Append("LOCK TABLES `").Append(tblName).AppendLine("` WRITE;");
+            var raw2 = ExecuteData(string.Concat("SELECT * FROM `", tblName, "`"));
+            string beginLine = string.Concat("INSERT INTO `", tblName, "`");
+            var sb = new StringBuilder();
+            int j = 0;
+
+            foreach (DataRow row in raw2.Table.Rows)
+            {
+                string line = string.Empty;
+                if (j == 0)
+                {
+                    line += string.Concat(beginLine, " VALUES");
+                }
+                line += " (";
+                int colCount = row.ItemArray.Length;
+                for (int i = 0; i < colCount; i++)
+                {
+                    string value = row[i].ToString();
+                    Type t = row[i].GetType();
+                    if (t == typeof(string))
+                        value = string.Concat("'", value.Replace("\r", string.Empty).Replace("\n", string.Empty), "'");
+                    line += value;
+                    if (i < colCount - 1)
+                        line += ",";
+                }
+                line += ")";
+                if (j == 1000)
+                {
+                    sb.Append(line);
+                    fileText.Append(sb).AppendLine(";");
+                    sb = new StringBuilder();
+                    j = 0;
+                    continue;
+                }
+                line += ",";
+                sb.Append(line);
+                j++;
+            }
+            if (sb.Length != 0)
+                fileText.Append(sb.ToString(0, sb.Length - 1)).AppendLine(";");
+            fileText.AppendLine("UNLOCK TABLES;");
+            return fileText.ToString();
+        }
 
         /// <summary>
         /// Стартует транзакцию
@@ -160,6 +227,13 @@ namespace NanoOrmMySQL
             return SelectOne<T>(string.Format("WHERE {0} = {1}", primaryKeyCollumn, id));
         }
 
+        /// <summary>
+        /// Возвращает 1 запись по идентификатору
+        /// </summary>
+        /// <typeparam name="T">Тип</typeparam>
+        /// <param name="id">Идентификатор</param>
+        /// <param name="tableName">Имя таблицы</param>
+        /// <returns>Объект типа Т</returns>
         public T SelectOne<T>(object id, string tableName) where T : new()
         {
             var type = typeof(T);
@@ -189,6 +263,13 @@ namespace NanoOrmMySQL
             return res[0];
         }
 
+        /// <summary>
+        /// Возвращает 1 запись по условию
+        /// </summary>
+        /// <typeparam name="T">Тип</typeparam>
+        /// <param name="where">Условие</param>
+        /// <param name="tableName">Имя таблицы</param>
+        /// <returns>Объект типа Т</returns>
         public T SelectOne<T>(string where, string tableName) where T : new()
         {
             var res = Select<T>(where + " LIMIT 1", tableName);
@@ -208,6 +289,16 @@ namespace NanoOrmMySQL
         }
 
         /// <summary>
+        /// Возвращает объект запроса для построения запроса подобоно LINQ
+        /// </summary>
+        /// <typeparam name="T">Тип</typeparam>
+        /// <returns>Список объектов типа Т</returns>
+        public SQLQuery<T> Table<T>(string tableName) where T : class, new()
+        {
+            return new SQLQuery<T>(this, tableName);
+        }
+
+        /// <summary>
         /// Возвращает все сохранненые в таблице записи
         /// </summary>
         /// <typeparam name="T">Тип</typeparam>
@@ -217,6 +308,12 @@ namespace NanoOrmMySQL
             return Select<T>(string.Empty);
         }
 
+        /// <summary>
+        /// Возвращает список объектов по условию
+        /// </summary>
+        /// <typeparam name="T">Тип</typeparam>
+        /// <param name="where">Условие</param>
+        /// <returns>Список объектов типа Т</returns>
         public List<T> Select<T>(string where) where T : new()
         {
             var type = typeof(T);
@@ -229,11 +326,10 @@ namespace NanoOrmMySQL
         /// </summary>
         /// <typeparam name="T">Тип</typeparam>
         /// <param name="where">Условие</param>
-        /// <param name="tableName"></param>
+        /// <param name="tableName">Имя таблицы</param>
         /// <returns>Список объектов типа Т</returns>
         public List<T> Select<T>(string where, string tableName) where T : new()
         {
-            var type = typeof(T);
             var query = string.Format("SELECT * FROM {0} {1};", tableName, where);
             var sqlRes = ExecuteData(query);
             if (sqlRes.HasError)
@@ -241,6 +337,10 @@ namespace NanoOrmMySQL
             return (from DataRow row in sqlRes.Table.Rows select RowToObject<T>(row)).ToList();
         }
 
+        /// <summary>
+        /// Удаляет объект из базы
+        /// </summary>
+        /// <param name="obj">Объект для удаления</param>
         public void Delete(object obj)
         {
             if (obj == null)
@@ -254,7 +354,7 @@ namespace NanoOrmMySQL
         /// Удаляет объект из базы
         /// </summary>
         /// <param name="obj">Объект для удаления</param>
-        /// <param name="tableName"></param>
+        /// <param name="tableName">Имя таблицы</param>
         /// <remarks>У объекта обязательно должен быть указан атрибут PrimaryKey</remarks>
         public void Delete(object obj, string tableName)
         {
@@ -273,11 +373,20 @@ namespace NanoOrmMySQL
             if (primaryKeyData == null)
                 throw new Exception("PrimaryKey not found");
             var query = string.Format("DELETE FROM {0} WHERE {1} = {2};", tableName, primaryKeyCollumn, primaryKeyData);
-            //Debug.WriteLine(query);
-
             var sqlres = ExecuteNoData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
+        }
+
+        /// <summary>
+        /// Удаляет объект из базы
+        /// </summary>
+        /// <param name="id">Идентификатор объекта для удаления</param>
+        public void DeleteByID<T>(object id) where T : new()
+        {
+            var type = typeof(T);
+            string tableName = GetTableName(type);
+            DeleteByID<T>(id, tableName);
         }
 
         /// <summary>
@@ -285,10 +394,10 @@ namespace NanoOrmMySQL
         /// </summary>
         /// <typeparam name="T">Тип</typeparam>
         /// <param name="id">Идентификатор</param>
-        public void DeleteByID<T>(object id) where T : new()
+        /// <param name="tableName"></param>
+        public void DeleteByID<T>(object id, string tableName) where T : new()
         {
             var type = typeof(T);
-            string tableName = GetTableName(type);
             var primaryKeyCollumn = string.Empty;
             foreach (var property in type.GetProperties())
             {
@@ -335,6 +444,10 @@ namespace NanoOrmMySQL
                 throw new Exception(sqlres.Message);
         }
 
+        /// <summary>
+        /// Обновляет объект в базе
+        /// </summary>
+        /// <param name="obj">Объект</param>
         public void Update(object obj)
         {
             var type = obj.GetType();
@@ -346,7 +459,7 @@ namespace NanoOrmMySQL
         /// Обновляет объект в базе
         /// </summary>
         /// <param name="obj">Объект</param>
-        /// <param name="tableName"></param>
+        /// <param name="tableName">Имя таблицы</param>
         public void Update(object obj, string tableName)
         {
             var type = obj.GetType();
@@ -383,8 +496,6 @@ namespace NanoOrmMySQL
             var query = sb.ToString();
             query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1);
             query += string.Format(" WHERE `{0}`.`{1}` = {2};", tableName, primaryKeyCollumn, primaryKeyData);
-
-            //Debug.WriteLine(query);
             var sqlres = ExecuteNoData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
@@ -426,7 +537,7 @@ namespace NanoOrmMySQL
         /// Сохраняет объект в базе
         /// </summary>
         /// <param name="obj">Объект</param>
-        /// <param name="tableName"></param>
+        /// <param name="tableName">Имя таблицы</param>
         public void Insert(object obj, string tableName)
         {
             var type = obj.GetType();
@@ -441,15 +552,19 @@ namespace NanoOrmMySQL
                 if (IsPrimaryKey(property))
                     continue;
 
-                query += string.Format("{0},", GetColName(property));
+                query += string.Format("`{0}`,", GetColName(property));
                 var tmpl = "{0},";
                 var value = property.GetValue(obj, null);
                 if (IsString(property))
                     tmpl = "'{0}',";
                 if (value == null && IsString(property))
+                {
                     value = string.Empty;
+                }
                 else
+                {
                     value = ConvertValue(property, value);
+                }
                 if (!IsString(property))
                     query2 += string.Format(tmpl, value.ToString().Replace(",", "."));
                 else
@@ -462,11 +577,13 @@ namespace NanoOrmMySQL
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
             foreach (var property in type.GetProperties())
+            {
                 if (IsPrimaryKey(property))
                 {
                     property.SetPropertyValue(sqlres.Table.Rows[0].ItemArray[0], obj);
                     break;
                 }
+            }
         }
 
         /// <summary>
@@ -515,7 +632,7 @@ namespace NanoOrmMySQL
             sb.AppendFormat("CREATE TABLE IF NOT EXISTS {0} (", tableName).AppendLine();
             foreach (var property in type.GetProperties())
             {
-                var colName = GetColName(property);
+                var colName = property.Name;
                 if (IsNoMapAttribute(property))
                     continue;
                 bool primaryKey = IsPrimaryKey(property);
@@ -528,10 +645,13 @@ namespace NanoOrmMySQL
                 att = property.GetCustomAttributes(typeof(Indexed), true);
                 if (att != null && att.Length != 0) indexList.Add(colName);
 
+                colName = GetColName(property);
                 var colType = GetColType(property);
                 sb.AppendFormat("\t`{0}` {1}", colName, colType);
                 if (primaryKey)
+                {
                     primaryKeyText = string.Format(" PRIMARY KEY(`{0}`)", colName);
+                }
                 if (autoIncrement)
                     sb.Append(" AUTO_INCREMENT");
                 if (notNull)
@@ -540,7 +660,10 @@ namespace NanoOrmMySQL
             }
             sb.Append(primaryKeyText).Append(");");
             var query = sb.ToString();
-            query = indexList.Aggregate(query, (current, colindex) => current + string.Format("CREATE INDEX  IF NOT EXISTS name_{0} ON {1}({2});", colindex, tableName, colindex));
+            query = indexList.Aggregate(query,
+                (current, colindex) =>
+                    current +
+                    string.Format("CREATE INDEX  IF NOT EXISTS name_{0} ON {1}({2});", colindex, tableName, colindex));
             var sqlres = ExecuteNoData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
@@ -563,79 +686,9 @@ namespace NanoOrmMySQL
                 }
             }
             var query = string.Format("DROP TABLE {0};", tableName);
-            //Debug.WriteLine(query);
             var sqlres = ExecuteNoData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
-        }
-
-        /// <summary>
-        /// Возвращает таблицу в виде sql строки для сохранения как бекап
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <returns>строка</returns>
-        public string Backup<T>() where T : new()
-        {
-            var tableName = GetTableName(typeof(T));
-            return BackupTable(tableName);
-        }
-
-        /// <summary>
-        /// Возвращает таблицу в виде sql строки для сохранения как бекап
-        /// </summary>
-        /// <param name="tblName">Название таблицы</param>
-        /// <returns>Строка</returns>
-        public string BackupTable(string tblName)
-        {
-            var fileText = new StringBuilder();
-            fileText.AppendLine(string.Concat("DROP TABLE IF EXISTS `", tblName, "`;"));
-            var query = $"SHOW CREATE TABLE `{tblName}`;";
-            var sqlRaw = ExecuteData(query);
-            if (sqlRaw.HasError)
-                throw new Exception(sqlRaw.Message);
-            fileText.AppendLine(sqlRaw.Table.Rows[0].ItemArray[1] + ";");
-            fileText.AppendLine($"LOCK TABLES `{tblName}` WRITE;");
-            var raw2 = ExecuteData(string.Concat("SELECT * FROM `", tblName, "`"));
-            string beginLine = string.Concat("INSERT INTO `", tblName, "`");
-            var sb = new StringBuilder();
-            int j = 0;
-
-            foreach (DataRow row in raw2.Table.Rows)
-            {
-                string line = string.Empty;
-                if (j == 0)
-                {
-                    line += string.Concat(beginLine, " VALUES");
-                }
-                line += " (";
-                int colCount = row.ItemArray.Length;
-                for (int i = 0; i < colCount; i++)
-                {
-                    string value = row[i].ToString();
-                    Type t = row[i].GetType();
-                    if (t == typeof(string))
-                        value = string.Concat("'", value.Replace("\r", string.Empty).Replace("\n", string.Empty), "'");
-                    line += value;
-                    if (i < colCount - 1)
-                        line += ",";
-                }
-                line += ")";
-                if (j == 1000)
-                {
-                    sb.Append(line);
-                    fileText.AppendLine(sb + ";");
-                    sb = new StringBuilder();
-                    j = 0;
-                    continue;
-                }
-                line += ",";
-                sb.Append(line);
-                j++;
-            }
-            if (sb.Length != 0)
-                fileText.AppendLine(sb.ToString(0, sb.Length - 1) + ";");
-            fileText.AppendLine("UNLOCK TABLES;");
-            return fileText.ToString();
         }
 
         #endregion ORM
@@ -664,7 +717,6 @@ namespace NanoOrmMySQL
                 if (IsNoMapAttribute(property))
                     continue;
                 var colName = GetColName(property);
-                //row[colName].SetPropertyValue(property, res);
                 property.SetPropertyValue(row[colName], res);
             }
 
@@ -759,31 +811,26 @@ namespace NanoOrmMySQL
         /// <returns>Результат запроса</returns>
         public SQLReturn ExecuteNoData(string query)
         {
-            LastQuery = query;
-
-#if DEBUG
-            Debug.WriteLine(query);
-#endif
-
+            LastQuery = (string)query.Clone();
             var result = new SQLReturn();
             try
             {
-                using (var connRc = new MySqlConnection(ConnectionString))
+                if (Connection == null)
                 {
-                    using (var commRc = new MySqlCommand(query, connRc))
+                    Connection = new MySqlConnection(ConnectionString);
+                    Connection.Open();
+                }
+                using (var commRc = new MySqlCommand(query, Connection))
+                {
+                    try
                     {
-                        connRc.Open();
-                        try
-                        {
-                            commRc.ExecuteNonQuery();
-                            result.HasError = false;
-                        }
-                        catch (Exception ex)
-                        {
-                            result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
-
-                            result.HasError = true;
-                        }
+                        commRc.ExecuteNonQuery();
+                        result.HasError = false;
+                    }
+                    catch (Exception ex)
+                    {
+                        result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
+                        result.HasError = true;
                     }
                 }
             }
@@ -802,37 +849,31 @@ namespace NanoOrmMySQL
         /// <returns>Результат запроса</returns>
         public SQLReturnData ExecuteData(string query)
         {
-            LastQuery = query;
-
-#if DEBUG
-            Debug.WriteLine(query);
-#endif
-
+            LastQuery = (string)query.Clone();
             var result = new SQLReturnData();
             try
             {
-                using (var connRc = new MySqlConnection(ConnectionString))
+                if (Connection == null)
                 {
-                    using (var commRc = new MySqlCommand(query, connRc))
+                    Connection = new MySqlConnection(ConnectionString);
+                    Connection.Open();
+                }
+                using (var commRc = new MySqlCommand(query, Connection))
+                {
+                    try
                     {
-                        connRc.Open();
-
-                        try
+                        var adapterP = new MySqlDataAdapter
                         {
-                            var adapterP = new MySqlDataAdapter
-                            {
-                                SelectCommand = commRc
-                            };
-                            var ds1 = new DataSet();
-                            //result.ResultData = new DataTable();
-                            adapterP.Fill(ds1);
-                            result.Table = ds1.Tables[0];
-                        }
-                        catch (Exception ex)
-                        {
-                            result.HasError = true;
-                            result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
-                        }
+                            SelectCommand = commRc
+                        };
+                        var ds1 = new DataSet();
+                        adapterP.Fill(ds1);
+                        result.Table = ds1.Tables[0];
+                    }
+                    catch (Exception ex)
+                    {
+                        result.HasError = true;
+                        result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
                     }
                 }
             }
@@ -845,6 +886,20 @@ namespace NanoOrmMySQL
         }
 
         #endregion DB Execute
+
+        /// <summary>
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting
+        /// unmanaged resources.
+        /// </summary>
+        /// <filterpriority>2</filterpriority>
+        public void Dispose()
+        {
+            if (Connection != null)
+            {
+                Connection.Close();
+                Connection.Dispose();
+            }
+        }
     }
 
     #region Result Classes
@@ -1026,46 +1081,6 @@ namespace NanoOrmMySQL
 
     #endregion Attributes
 
-    #region Singleton
-
-    public sealed class DBHelper : NanoOrm
-    {
-        private static volatile DBHelper _Instance;
-        private static readonly object _SyncRoot = new Object();
-
-        /// <summary>
-        /// Имя файла базы данных
-        /// </summary>
-        public static string CONNECTION_STRING { get; set; } = "Database=testorm;DataSource=10.110.50.113;Uid=root;Password=*****;CharSet=utf8;DefaultCommandTimeout=300;ConnectionTimeout=300;";
-
-        private DBHelper() : base(CONNECTION_STRING)
-        {
-        }
-
-        /// <summary>
-        /// База данных
-        /// </summary>
-        public static DBHelper DB
-        {
-            get
-            {
-                if (_Instance == null)
-                {
-                    lock (_SyncRoot)
-                    {
-                        if (_Instance == null)
-                            _Instance = new DBHelper();
-                    }
-                    return _Instance;
-                }
-
-                return _Instance;
-            }
-        }
-    }
-
-    #endregion Singleton
-
     #region Extension
 
     /// <summary>
@@ -1085,15 +1100,28 @@ namespace NanoOrmMySQL
                 property.SetValue(obj, ((double)val).ConvertFromUnixTimestamp(), null);
             else if (property.PropertyType == typeof(bool))
                 property.SetValue(obj, val.ToString() == "1", null);
+            else if (property.PropertyType == typeof(int))
+                property.SetValue(obj, Convert.ToInt32(val), null);
+            else if (property.PropertyType == typeof(uint))
+                property.SetValue(obj, Convert.ToUInt32(val), null);
+            else if (property.PropertyType == typeof(long))
+                property.SetValue(obj, Convert.ToInt64(val), null);
+            else if (property.PropertyType == typeof(ulong))
+                property.SetValue(obj, Convert.ToUInt64(val), null);
+            else if (property.PropertyType == typeof(sbyte))
+                property.SetValue(obj, Convert.ToInt32(val), null);
+            else if (property.PropertyType == typeof(float))
+                property.SetValue(obj, Convert.ToSingle(val), null);
+            else if (property.PropertyType == typeof(double))
+                property.SetValue(obj, Convert.ToDouble(val), null);
             else if (property.PropertyType == typeof(byte[]))
                 property.SetValue(obj, Convert.FromBase64String(val.ToString()), null);
-            else if (property.PropertyType == typeof(Guid))
-                property.SetValue(obj, new Guid(val.ToString()), null);
             else if (property.PropertyType == typeof(string))
                 property.SetValue(obj, val.ToString(), null);
+            else if (property.PropertyType == typeof(Guid))
+                property.SetValue(obj, new Guid(val.ToString()), null);
             else
-                property.SetValue(obj, Convert.ChangeType(val, property.PropertyType, null), null);
-            //property.SetValue(obj, val, null);
+                property.SetValue(obj, val, null);
         }
 
         /// <summary>
@@ -1128,19 +1156,26 @@ namespace NanoOrmMySQL
     /// <typeparam name="T">Тип</typeparam>
     public class SQLQuery<T> where T : class, new()
     {
-        private readonly string _TableName;
-        private string _Limit = string.Empty;
-        private readonly List<Condition> _Conditions = new List<Condition>();
-        private readonly List<OrderTerm> _OrderTerms = new List<OrderTerm>();
-        private readonly List<string> _Groups = new List<string>();
-        private readonly NanoOrm _Orm;
+        private string _limit = string.Empty;
+        private readonly List<Condition> _conditions = new List<Condition>();
+        private readonly List<OrderTerm> _orderTerms = new List<OrderTerm>();
+        private readonly List<string> _groups = new List<string>();
+        private readonly NanoOrm _orm;
+        private readonly string _globalTableName = string.Empty;
 
         /// <summary>
         /// Конструктор
         /// </summary>
         public SQLQuery()
         {
-            _TableName = GetTableName(typeof(T));
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        public SQLQuery(string tableName)
+        {
+            _globalTableName = tableName;
         }
 
         /// <summary>
@@ -1149,25 +1184,48 @@ namespace NanoOrmMySQL
         /// <param name="orm">ОРМ</param>
         public SQLQuery(NanoOrm orm)
         {
-            _Orm = orm;
-            _TableName = GetTableName(typeof(T));
+            _orm = orm;
         }
 
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        /// <param name="tableName">Имя таблицы</param>
+        public SQLQuery(NanoOrm orm, string tableName)
+        {
+            _orm = orm;
+            _globalTableName = tableName;
+        }
+
+        /// <summary>
+        /// Возвращает первый элемент запроса
+        /// </summary>
+        /// <returns></returns>
         public T First()
         {
-            if (_Orm == null)
+            if (_orm == null)
                 throw new Exception("Not set ORM");
-            var list = _Orm.Query<T>(ToString());
+            Limit(1);
+            var list = _orm.Query<T>(ToString());
             if (list.Count == 0)
                 return null;
             return list[0];
         }
 
+        /// <summary>
+        /// Возвращает последний элемент запроса
+        /// </summary>
+        /// <returns></returns>
         public T Last()
         {
-            if (_Orm == null)
+            if (_orm == null)
                 throw new Exception("Not set ORM");
-            var list = _Orm.Query<T>(ToString());
+            var count = Count();
+            if (count == 0)
+                return null;
+            Limit(count - 1, 1);
+            var list = _orm.Query<T>(ToString());
             if (list.Count == 0)
                 return null;
             return list.Last();
@@ -1179,9 +1237,9 @@ namespace NanoOrmMySQL
         /// <returns>Список объектов</returns>
         public List<T> ToList()
         {
-            if (_Orm == null)
+            if (_orm == null)
                 throw new Exception("Not set ORM");
-            return _Orm.Query<T>(ToString());
+            return _orm.Query<T>(ToString());
         }
 
         /// <summary>
@@ -1199,7 +1257,7 @@ namespace NanoOrmMySQL
         /// <returns>SQL запрос</returns>
         public override string ToString()
         {
-            var sbQuery = new StringBuilder(string.Format("SELECT * FROM `{0}` ", GetTableName(typeof(T))));
+            var sbQuery = new StringBuilder(string.Format("SELECT * FROM\n `{0}`\n", GetTableName(typeof(T))));
             AddWhere(sbQuery);
 
             return AddOrderGroupLimit(sbQuery);
@@ -1209,17 +1267,225 @@ namespace NanoOrmMySQL
         /// Возвращает кол-во записей в таблице
         /// </summary>
         /// <returns>Кол-во записей</returns>
-        public int Count()
+        public Int32 Count()
         {
-            if (_Orm == null)
+            if (_orm == null)
                 throw new Exception("Not set ORM");
             var sbQuery = new StringBuilder(string.Format("SELECT COUNT(*) FROM `{0}` ", GetTableName(typeof(T))));
             AddWhere(sbQuery);
             var query = sbQuery.ToString();
-            var sqlRes = _Orm.ExecuteData(query);
+            var sqlRes = _orm.ExecuteData(query);
             if (sqlRes.HasError)
                 throw new Exception(sqlRes.Message);
             return Convert.ToInt32(sqlRes.Table.Rows[0].ItemArray[0]);
+        }
+
+        /// <summary>
+        /// Возвращает кол-во записей в таблице
+        /// </summary>
+        /// <returns>Кол-во записей</returns>
+        public Int64 LongCount()
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var sbQuery = new StringBuilder(string.Format("SELECT COUNT(*) FROM `{0}` ", GetTableName(typeof(T))));
+            AddWhere(sbQuery);
+            var query = sbQuery.ToString();
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return Convert.ToInt64(sqlRes.Table.Rows[0].ItemArray[0]);
+        }
+
+        /// <summary>
+        /// Возвращает сумму столбца
+        /// </summary>
+        /// <param name="member">Столбец</param>
+        /// <returns></returns>
+        public object Sum(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var sbQuery =
+                new StringBuilder(string.Format("SELECT Sum(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col));
+            AddWhere(sbQuery);
+            var query = sbQuery.ToString();
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает минимальное значение аргумента member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object Min(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var query = string.Format("SELECT MIN(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает максмальное значение аргумента member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object Max(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var query = string.Format("SELECT MAX(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает вариант стандарта, которому соответствует member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object Variance(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var query = string.Format("SELECT VARIANCE(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает среднеквадратичное отклонение значения в аргументе member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object Std(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var query = string.Format("SELECT STD(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает побитовое ИЛИ для всех битов в member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object BitOr(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var query = string.Format("SELECT BIT_OR(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает побитовое И для всех битов в member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object BitAnd(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var col = GetColName(member);
+            var query = string.Format("SELECT BIT_AND(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает среднее значение аргумента member
+        /// </summary>
+        /// <param name="member">Аргумент</param>
+        /// <returns></returns>
+        public object Avg(Expression<Func<T, object>> member)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var query = string.Format("SELECT AVG(*) FROM `{0}` ", GetTableName(typeof(T)));
+            var sqlRes = _orm.ExecuteData(query);
+            if (sqlRes.HasError)
+                throw new Exception(sqlRes.Message);
+            return sqlRes.Table.Rows[0].ItemArray[0];
+        }
+
+        /// <summary>
+        /// Возвращает заданный элемент
+        /// </summary>
+        /// <param name="index">Индекс элемента</param>
+        /// <returns></returns>
+        public T ElementAt(int index)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            Limit(index, 1);
+            var list = _orm.Query<T>(ToString());
+            if (list.Count == 0)
+                return null;
+            return list[0];
+        }
+
+        /// <summary>
+        /// Возвращает заданное число элементов Аналог Limit
+        /// </summary>
+        /// <param name="count">Кол-во элементов</param>
+        /// <returns></returns>
+        public List<T> Take(int count)
+        {
+            Take(0, count);
+            return ToList();
+        }
+
+        /// <summary>
+        /// Возвращает заданное число элементов Аналог Limit
+        /// </summary>
+        /// <param name="begin">Индекс первого элемента</param>
+        /// <param name="count">Кол-во элементов</param>
+        /// <returns></returns>
+        public List<T> Take(int begin, int count)
+        {
+            Limit(begin, count);
+            return ToList();
+        }
+
+        /// <summary>
+        /// Пропускает заданное число элементов
+        /// </summary>
+        /// <param name="count">Кол-во</param>
+        /// <returns></returns>
+        public List<T> Skip(int count)
+        {
+            var c = Count();
+            if (c == 0)
+                return new List<T>();
+            Limit(count, c);
+            return ToList();
         }
 
         /// <summary>
@@ -1227,19 +1493,21 @@ namespace NanoOrmMySQL
         /// </summary>
         /// <param name="predicate">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Where(Expression<Func<T, bool>> predicate)
+        public SQLQuery<T> Where(Expression<Func<T, object>> predicate)
         {
             return Add(predicate, ExpressionConnectType.WHERE);
         }
 
         /// <summary>
-        /// Добавляет дополнительное условие к запросу
+        /// Добавляет начальное условие к запросу Паттерн поиска: % - The percent sign represents
+        /// zero, one, or multiple characters _ - The underscore represents a single character
         /// </summary>
         /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> And(Expression<Func<T, bool>> predicate)
+        public SQLQuery<T> Where(Expression<Func<T, object>> predicate, string searchPattern)
         {
-            return Add(predicate, ExpressionConnectType.AND);
+            return Add(predicate, ExpressionConnectType.WHERE, searchPattern);
         }
 
         /// <summary>
@@ -1247,9 +1515,43 @@ namespace NanoOrmMySQL
         /// </summary>
         /// <param name="predicate">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Or(Expression<Func<T, bool>> predicate)
+        public SQLQuery<T> And(Expression<Func<T, object>> predicate)
+        {
+            return Add(predicate, ExpressionConnectType.AND);
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу Паттерн поиска: % - The percent sign
+        /// represents zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLQuery<T> And(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            return Add(predicate, ExpressionConnectType.AND, searchPattern);
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLQuery<T> Or(Expression<Func<T, object>> predicate)
         {
             return Add(predicate, ExpressionConnectType.OR);
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу Паттерн поиска: % - The percent sign
+        /// represents zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLQuery<T> Or(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            return Add(predicate, ExpressionConnectType.OR, searchPattern);
         }
 
         /// <summary>
@@ -1259,7 +1561,7 @@ namespace NanoOrmMySQL
         /// <returns>Объект запроса</returns>
         public SQLQuery<T> Limit(int count)
         {
-            _Limit = string.Concat(" LIMIT ", count);
+            _limit = string.Concat(" LIMIT ", count);
             return this;
         }
 
@@ -1271,7 +1573,7 @@ namespace NanoOrmMySQL
         /// <returns>Объект запроса</returns>
         public SQLQuery<T> Limit(int begin, int count)
         {
-            _Limit = string.Concat(" LIMIT ", begin, ",", count);
+            _limit = string.Concat(" LIMIT ", begin, ",", count);
             return this;
         }
 
@@ -1321,11 +1623,11 @@ namespace NanoOrmMySQL
                 var mem = member.Body as MemberExpression;
                 if (mem == null)
                     throw new Exception(string.Format("member not MemberExpression: {0}", member));
-                _Groups.Add(mem.Member.Name);
+                _groups.Add(mem.Member.Name);
             }
             else
             {
-                _Groups.Add(((MemberExpression)body.Operand).Member.Name);
+                _groups.Add(((MemberExpression)body.Operand).Member.Name);
             }
             return this;
         }
@@ -1338,13 +1640,15 @@ namespace NanoOrmMySQL
         public SQLQuery<T> GroupBy(params Expression<Func<T, object>>[] members)
         {
             foreach (var member in members)
+            {
                 GroupBy(member);
+            }
             return this;
         }
 
         #region Private methods
 
-        private SQLQuery<T> AddOrder(Expression<Func<T, object>> member, OrderType type)
+        private string GetColName(Expression<Func<T, object>> member)
         {
             var body = member.Body as UnaryExpression;
             if (body == null)
@@ -1352,113 +1656,135 @@ namespace NanoOrmMySQL
                 var mem = member.Body as MemberExpression;
                 if (mem == null)
                     throw new Exception(string.Format("member not MemberExpression: {0}", member));
-                _OrderTerms.Add(new OrderTerm
-                {
-                    Member = mem.Member.Name,
-                    Type = type
-                });
+                return mem.Member.Name;
             }
-            else
+            return ((MemberExpression)body.Operand).Member.Name;
+        }
+
+        private SQLQuery<T> AddOrder(Expression<Func<T, object>> member, OrderType type)
+        {
+            var colName = GetColName(member);
+            _orderTerms.Add(new OrderTerm
             {
-                _OrderTerms.Add(new OrderTerm
-                {
-                    Member = ((MemberExpression)body.Operand).Member.Name,
-                    Type = type
-                });
-            }
+                Member = colName,
+                Type = type
+            });
             return this;
         }
 
-        private SQLQuery<T> Add(Expression<Func<T, bool>> predicate, ExpressionConnectType connectType)
+        private string ExpressionToString(Expression expression, ExpressionConnectType connectType)
         {
-            if (predicate.Body is BinaryExpression body)
+            switch (expression.NodeType)
             {
-                var cond = new Condition
-                {
-                    Left = GetMemberValue(body.Left),
-                    Right = GetMemberValue(body.Right),
-                    Type = body.NodeType,
-                    ConnectType = connectType
-                };
-                _Conditions.Add(cond);
-                return this;
-            }
-            throw new Exception(string.Format("predicate not BinaryExpression: {0}", predicate));
-        }
+                case ExpressionType.Constant:
+                    if (expression.Type == typeof(DateTime))
+                        return
+                            ((DateTime)((ConstantExpression)expression).Value).ConvertToUnixTimestamp()
+                                .ToString(CultureInfo.InvariantCulture);
+                    if (expression.Type == typeof(bool))
+                        return ((bool)((ConstantExpression)expression).Value) ? "1" : "0";
+                    if (expression.Type == typeof(byte[]))
+                        return string.Concat("'",
+                            Convert.ToBase64String((byte[])((ConstantExpression)expression).Value), "'");
+                    if (expression.Type == typeof(string) || expression.Type == typeof(char) ||
+                        expression.Type == typeof(Guid))
+                        return string.Concat("'", ((ConstantExpression)expression).Value.ToString(), "'");
+                    return ((ConstantExpression)expression).Value.ToString();
 
-        private string GetMemberValue(Expression member)
-        {
-            if (member.NodeType == ExpressionType.MemberAccess)
-            {
-                try
-                {
-                    object value = Expression.Lambda(member).Compile().DynamicInvoke();
+                case ExpressionType.Convert:
+                    var c = expression as UnaryExpression;
+                    if (c != null)
+                    {
+                        var op = c.Operand as BinaryExpression;
+                        if (op != null)
+                        {
+                            var str1 = ExpressionToString(op.Left, connectType);
+                            var str2 = ExpressionToString(op.Right, connectType);
+                            var cond = new Condition
+                            {
+                                Left = str1,
+                                Right = str2,
+                                Type = op.NodeType,
+                                ConnectType = connectType
+                            };
+                            _conditions.Add(cond);
+                            return ToString();
+                        }
+                        throw new Exception(string.Format("Expression is not BinaryExpression: {0}", expression));
+                    }
+                    throw new Exception(string.Format("Expression is not UnaryExpression: {0}", expression));
+
+                case ExpressionType.Lambda:
+                    var l = expression as LambdaExpression;
+                    if (l == null)
+                        throw new Exception(string.Format("Expression is not LambdaExpression: {0}", expression));
+                    return ExpressionToString(l.Body, connectType);
+
+                case ExpressionType.Parameter:
+                    return ((ParameterExpression)expression).Name;
+
+                case ExpressionType.MemberAccess:
+                    var exp = expression as MemberExpression;
+                    if (exp == null)
+                        throw new Exception(string.Format("Expression is not MemberExpression: {0}", expression));
+                    if (exp.Expression.NodeType == ExpressionType.Parameter)
+                        return exp.Member.Name;
+                    var value = Expression.Lambda(expression).Compile().DynamicInvoke();
                     return value.ToString();
-                }
-                catch
-                {
-                }
-            }
 
-            if (member.NodeType == ExpressionType.Constant)
-            {
-                if (((ConstantExpression)member).Type == typeof(DateTime))
-                    return ((DateTime)((ConstantExpression)member).Value).ConvertToUnixTimestamp().ToString();
-                if (((ConstantExpression)member).Type == typeof(bool))
-                    return ((bool)((ConstantExpression)member).Value) ? "1" : "0";
-                if (((ConstantExpression)member).Type == typeof(byte[]))
-                    return Convert.ToBase64String((byte[])((ConstantExpression)member).Value);
-                if (((ConstantExpression)member).Type == typeof(string) || ((ConstantExpression)member).Type == typeof(char) || ((ConstantExpression)member).Type == typeof(Guid))
-                    return string.Concat("'", ((ConstantExpression)member).Value.ToString(), "'");
-                return ((ConstantExpression)member).Value.ToString();
+                default:
+                    return ((MemberExpression)expression).Member.Name;
             }
-
-            return ((MemberExpression)member).Member.Name;
         }
 
-        private string GetMemberLeftValue(Expression member)
+        private SQLQuery<T> Add(Expression<Func<T, object>> predicate, ExpressionConnectType connectType)
         {
-            if (member.NodeType == ExpressionType.Constant)
-            {
-                if (((ConstantExpression)member).Type == typeof(DateTime))
-                    return ((DateTime)((ConstantExpression)member).Value).ConvertToUnixTimestamp().ToString();
-                if (((ConstantExpression)member).Type == typeof(bool))
-                    return ((bool)((ConstantExpression)member).Value) ? "1" : "0";
-                if (((ConstantExpression)member).Type == typeof(byte[]))
-                    return Convert.ToBase64String((byte[])((ConstantExpression)member).Value);
-                if (((ConstantExpression)member).Type == typeof(string) || ((ConstantExpression)member).Type == typeof(char) || ((ConstantExpression)member).Type == typeof(Guid))
-                    return string.Concat("'", ((ConstantExpression)member).Value.ToString(), "'");
-                return ((ConstantExpression)member).Value.ToString();
-            }
+            ExpressionToString(predicate, connectType);
+            return this;
+        }
 
-            return ((MemberExpression)member).Member.Name;
+        private SQLQuery<T> Add(Expression<Func<T, object>> member, ExpressionConnectType connectType,
+            string searchPattern)
+        {
+            var col = GetColName(member);
+            var cond = new Condition
+            {
+                Left = col,
+                Right = searchPattern,
+                Type = ExpressionType.Quote,
+                ConnectType = connectType
+            };
+            _conditions.Add(cond);
+            return this;
         }
 
         private string AddOrderGroupLimit(StringBuilder sbQuery)
         {
-            if (_Groups.Count != 0)
+            if (_groups.Count != 0)
             {
                 sbQuery.AppendLine(" GROUP BY ");
-                foreach (var group in _Groups)
+                foreach (var group in _groups)
                     sbQuery.Append(group).Append(", ");
                 sbQuery.Remove(sbQuery.Length - 2, 1);
             }
 
-            if (_OrderTerms.Count != 0)
+            if (_orderTerms.Count != 0)
             {
                 sbQuery.AppendLine(" ORDER BY ");
-                foreach (var order in _OrderTerms)
-                    sbQuery.Append(order.ToString()).Append(", ");
+                foreach (var order in _orderTerms)
+                    sbQuery.Append(order).Append(", ");
                 sbQuery.Remove(sbQuery.Length - 2, 1);
             }
 
-            sbQuery.AppendLine(_Limit);
+            sbQuery.AppendLine(_limit);
 
             return sbQuery.ToString();
         }
 
         private string GetTableName(Type type)
         {
+            if (!string.IsNullOrEmpty(_globalTableName))
+                return _globalTableName;
             var tableName = type.Name;
             foreach (var attribute in type.GetCustomAttributes(false))
             {
@@ -1474,15 +1800,15 @@ namespace NanoOrmMySQL
 
         private void AddWhere(StringBuilder sbQuery)
         {
-            var where = _Conditions.Find(c => c.ConnectType == ExpressionConnectType.WHERE);
+            var where = _conditions.Find(c => c.ConnectType == ExpressionConnectType.WHERE);
             if (where != null)
             {
                 sbQuery.AppendLine(where.ToString());
-                _Conditions.Remove(where);
-                foreach (var condition in _Conditions)
+                _conditions.Remove(where);
+                foreach (var condition in _conditions)
                     sbQuery.AppendLine(condition.ToString());
 
-                _Conditions.Add(where);
+                _conditions.Add(where);
             }
         }
 
@@ -1519,8 +1845,8 @@ namespace NanoOrmMySQL
     /// </summary>
     public enum OrderType
     {
-        ASC,//Туда
-        DESC//Обратно
+        ASC, //Туда
+        DESC //Обратно
     }
 
     /// <summary>
@@ -1528,7 +1854,9 @@ namespace NanoOrmMySQL
     /// </summary>
     public enum ExpressionConnectType
     {
-        WHERE, AND, OR
+        WHERE,
+        AND,
+        OR
     }
 
     /// <summary>
@@ -1562,7 +1890,7 @@ namespace NanoOrmMySQL
         /// <returns>Строка, представляющая текущий объект.</returns>
         public override string ToString()
         {
-            var ex = string.Empty;
+            string ex;
             switch (Type)
             {
                 case ExpressionType.Equal:
@@ -1589,6 +1917,10 @@ namespace NanoOrmMySQL
                     ex = ">=";
                     break;
 
+                case ExpressionType.Quote:
+                    ex = "LIKE";
+                    break;
+
                 default:
                     ex = "=";
                     break;
@@ -1608,6 +1940,8 @@ namespace NanoOrmMySQL
                     con = "WHERE\n";
                     break;
             }
+            if (Type == ExpressionType.Quote)
+                Right = string.Concat("('", Right, "')");
             return string.Format(" {0} {1} {2} {3}", con, Left, ex, Right);
         }
     }
