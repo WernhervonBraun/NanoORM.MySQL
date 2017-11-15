@@ -123,18 +123,11 @@ Delete:
 # Linq-подобная выборка
 Все Linq-подобные выборки должны идти через метод Table<T>()
     
-foreach (var n in 
-
-    DBHelper.DB.Table<TestClass1>().Where(x => x.ID > 30).And(x=>x.ID < 130).OrderBy(x => x.StrProperty, 
-   
-   OrderType.DESC).Limit(1,100).ToList()
-   
+    foreach (var n in 
+        DBHelper.DB.Table<TestClass1>().Where(x => x.ID > 30).And(x=>x.ID < 130).OrderBy(x => x.StrProperty, 
+       OrderType.DESC).Limit(1,100).ToList())
+   {
     //Будет создан запрос "SELECT * FROM TestClass1 WHERE ID > 30 AND ID < 130 ORDER BY StrProperty LIMIT 1, 100", вызван и результат возвращен в виде списка.
-    
-    )
-    
-{
-
     Console.WriteLine(n);
     
-}
+    }
