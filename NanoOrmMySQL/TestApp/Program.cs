@@ -11,113 +11,140 @@ namespace TestApp
     {
         private static void Main(string[] args)
         {
-            DBHelper.DB.CreateTable<TestClass1>();
-            DBHelper.DB.CreateTable<TestClass2>();
+            //DBHelper.DB.CreateTable<TestClass1>();
+            //DBHelper.DB.CreateTable<TestClass2>();
 
-            #region 1 Insert
+            DBHelper.DB.CreateTable<TestClass3>();
 
-            var c1 = new TestClass1
-            {
-                BoolProperty = true,
-                StrProperty = "StrProperty Test Class",
-                FloatProperty = 0.1F,
-                DateTimeProperty = DateTime.Now
-            };
-            DBHelper.DB.Insert(c1);
-            foreach (var test in DBHelper.DB.Select<TestClass1>(string.Format("WHERE ID = {0}", c1.ID)))
-                Console.WriteLine(test);
+            #region oldCode
 
-            #endregion 1 Insert
+            //#region 1 Insert
 
-            #region 1 Update
+            //var c1 = new TestClass1
+            //{
+            //    BoolProperty = true,
+            //    StrProperty = "StrProperty Test Class",
+            //    FloatProperty = 0.1F,
+            //    DateTimeProperty = DateTime.Now
+            //};
+            //DBHelper.DB.Insert(c1);
+            //foreach (var test in DBHelper.DB.Select<TestClass1>(string.Format("WHERE ID = {0}", c1.ID)))
+            //    Console.WriteLine(test);
 
-            c1.StrProperty = "StrProperty Test Class UPDATE";
-            c1.DateTimeProperty = DateTime.Now.AddDays(10);
-            DBHelper.DB.Update(c1);
+            //#endregion 1 Insert
 
-            foreach (var test in DBHelper.DB.Select<TestClass1>())
-                Console.WriteLine(test);
+            //#region 1 Update
 
-            #endregion 1 Update
+            //c1.StrProperty = "StrProperty Test Class UPDATE";
+            //c1.DateTimeProperty = DateTime.Now.AddDays(10);
+            //DBHelper.DB.Update(c1);
 
-            var c2 = DBHelper.DB.SelectOne<TestClass1>(c1.ID);
-            Console.WriteLine(c2);
+            //foreach (var test in DBHelper.DB.Select<TestClass1>())
+            //    Console.WriteLine(test);
 
-            #region Mass Insert
+            //#endregion 1 Update
 
-            const int rowCount = 100;
-            var list = new List<TestClass1>();
-            for (int i = 0; i < rowCount; i++)
-            {
-                var temp = new TestClass1
-                {
-                    BoolProperty = true,
-                    StrProperty = "StrProperty " + i,
-                    FloatProperty = 0.1F,
-                    DateTimeProperty = DateTime.Now
-                };
-                list.Add(temp);
-            }
-            var diag = new Stopwatch();
-            diag.Start();
-            DBHelper.DB.InsertAll<TestClass1>(list);
-            diag.Stop();
-            Console.WriteLine(string.Format("Insert {0}: {1} ms.", rowCount, diag.ElapsedMilliseconds));
+            //var c2 = DBHelper.DB.SelectOne<TestClass1>(c1.ID);
+            //Console.WriteLine(c2);
 
-            #endregion Mass Insert
+            //#region Mass Insert
 
-            #region Mass Update
+            //const int rowCount = 100;
+            //var list = new List<TestClass1>();
+            //for (int i = 0; i < rowCount; i++)
+            //{
+            //    var temp = new TestClass1
+            //    {
+            //        BoolProperty = true,
+            //        StrProperty = "StrProperty " + i,
+            //        FloatProperty = 0.1F,
+            //        DateTimeProperty = DateTime.Now
+            //    };
+            //    list.Add(temp);
+            //}
+            //var diag = new Stopwatch();
+            //diag.Start();
+            //DBHelper.DB.InsertAll<TestClass1>(list);
+            //diag.Stop();
+            //Console.WriteLine(string.Format("Insert {0}: {1} ms.", rowCount, diag.ElapsedMilliseconds));
 
-            list = DBHelper.DB.Select<TestClass1>();
-            for (int i = 0; i < list.Count; i++)
-                list[i].IntProperty = i;
+            //#endregion Mass Insert
 
-            diag.Reset();
-            diag.Start();
-            DBHelper.DB.UpdateAll<TestClass1>(list);
-            diag.Stop();
-            Console.WriteLine(string.Format("UPDATE {0}: {1} ms.", list.Count, diag.ElapsedMilliseconds));
-            foreach (var test in DBHelper.DB.Select<TestClass1>())
-                Console.WriteLine(test);
+            //#region Mass Update
 
-            #endregion Mass Update
+            //list = DBHelper.DB.Select<TestClass1>();
+            //for (int i = 0; i < list.Count; i++)
+            //    list[i].IntProperty = i;
 
-            Console.WriteLine(string.Format("Count: {0}", DBHelper.DB.Count<TestClass1>()));
-            Console.WriteLine(string.Format("Count: {0}", DBHelper.DB.Count<TestClass1>("WHERE id > 40")));
+            //diag.Reset();
+            //diag.Start();
+            //DBHelper.DB.UpdateAll<TestClass1>(list);
+            //diag.Stop();
+            //Console.WriteLine(string.Format("UPDATE {0}: {1} ms.", list.Count, diag.ElapsedMilliseconds));
+            //foreach (var test in DBHelper.DB.Select<TestClass1>())
+            //    Console.WriteLine(test);
 
-            var c3 = new TestClass2
-            {
-                ID = 30
-            };
+            //#endregion Mass Update
 
-            //var query2 = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > c3.ID).First();
-            //Console.WriteLine("Query 2: {0}", query2);
+            //Console.WriteLine(string.Format("Count: {0}", DBHelper.DB.Count<TestClass1>()));
+            //Console.WriteLine(string.Format("Count: {0}", DBHelper.DB.Count<TestClass1>("WHERE id > 40")));
 
-            var query3 = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > c3.ID).And(c => c.BoolProperty == true);
-            //Console.WriteLine("Query 3: {0}", query3.ToString());
-            Console.WriteLine(query3.First());
+            //var c3 = new TestClass2
+            //{
+            //    ID = 30
+            //};
 
-            var query4 = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > c3.ID).And(c => c.BoolProperty == false);
-            //Console.WriteLine("Query 4: {0}", query4.ToString());
-            Console.WriteLine(query4.Last());
+            ////var query2 = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > c3.ID).First();
+            ////Console.WriteLine("Query 2: {0}", query2);
 
-            var query = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > 30).Sum(c => c.IntProperty);
-            Console.WriteLine("Sum: {0}", query);
+            //var query3 = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > c3.ID).And(c => c.BoolProperty == true);
+            ////Console.WriteLine("Query 3: {0}", query3.ToString());
+            //Console.WriteLine(query3.First());
 
-            var elementAt = DBHelper.DB.Table<TestClass1>().ElementAt(30);
-            Console.WriteLine(elementAt);
+            //var query4 = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > c3.ID).And(c => c.BoolProperty == false);
+            ////Console.WriteLine("Query 4: {0}", query4.ToString());
+            //Console.WriteLine(query4.Last());
 
-            var skip = DBHelper.DB.Table<TestClass1>().Skip(30);
-            Console.WriteLine("Skip: {0}", skip.Count);
+            //var query = DBHelper.DB.Table<TestClass1>().Where(c => c.ID > 30).Sum(c => c.IntProperty);
+            //Console.WriteLine("Sum: {0}", query);
 
-            var queryLike = DBHelper.DB.Table<TestClass1>().Where(c => c.ID, "%1").ToList();
-            Console.WriteLine("queryLike: {0}", queryLike.Count);
+            //var elementAt = DBHelper.DB.Table<TestClass1>().ElementAt(30);
+            //Console.WriteLine(elementAt);
 
-            DBHelper.DB.DropTable<TestClass1>();
-            DBHelper.DB.DropTable<TestClass2>();
-            DBHelper.DB.Dispose();
+            //var skip = DBHelper.DB.Table<TestClass1>().Skip(30);
+            //Console.WriteLine("Skip: {0}", skip.Count);
+
+            //var queryLike = DBHelper.DB.Table<TestClass1>().Where(c => c.ID, "%1").ToList();
+            //Console.WriteLine("queryLike: {0}", queryLike.Count);
+
+            #endregion oldCode
+
+            //DBHelper.DB.DropTable<TestClass1>();
+            //DBHelper.DB.DropTable<TestClass2>();
+            DBHelper.DB.DropTable<TestClass3>();
+            //DBHelper.DB.Dispose();
             Console.ReadLine();
         }
+    }
+
+    public class TestClass3
+    {
+        [PrimaryKey, AutoIncrement]
+        public ulong ID { get; set; }
+
+        [NoMap]
+        public List<TestClass3Children> List { get; set; }
+    }
+
+    public class TestClass3Children
+    {
+        [PrimaryKey, AutoIncrement]
+        public ulong ID { get; set; }
+
+        [Indexed]
+        public ulong ParentID { get; set; }
+
+        public string Text { get; set; } = string.Empty;
     }
 
     public class TestClass1

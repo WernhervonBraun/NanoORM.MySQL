@@ -13,6 +13,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using MySql.Data.MySqlClient;
+using System.Collections;
 
 namespace NanoORMMySQL
 {
@@ -23,7 +24,7 @@ namespace NanoORMMySQL
         /// </summary>
         public string LastQuery { get; private set; }
 
-        public string ConnectionString { get; private set; }
+        public string ConnectionString { get; }
 
         public MySqlConnection Connection { get; private set; }
 
@@ -186,7 +187,9 @@ namespace NanoORMMySQL
         /// <param name="sql">Запрос</param>
         /// <param name="param">Массив параметров</param>
         /// <returns>Список объектов типа Т</returns>
-        /// <example>Query("SELECT * FROM testclass WHERE id &gt; ?",1000)</example>
+        /// <code>
+        /// Query("SELECT * FROM testclass WHERE id = ?",1000)
+        /// </code>
         public List<T> Query<T>(string sql, params object[] param) where T : new()
         {
             var arr = sql.Split(new[] { '?' });
@@ -292,6 +295,7 @@ namespace NanoORMMySQL
         /// Возвращает объект запроса для построения запроса подобоно LINQ
         /// </summary>
         /// <typeparam name="T">Тип</typeparam>
+        /// <param name="tableName">Имя таблицы</param>
         /// <returns>Список объектов типа Т</returns>
         public SQLQuery<T> Table<T>(string tableName) where T : class, new()
         {
@@ -334,6 +338,7 @@ namespace NanoORMMySQL
             var sqlRes = ExecuteData(query);
             if (sqlRes.HasError)
                 throw new Exception(sqlRes.Message);
+
             return (from DataRow row in sqlRes.Table.Rows select RowToObject<T>(row)).ToList();
         }
 
@@ -381,6 +386,7 @@ namespace NanoORMMySQL
         /// <summary>
         /// Удаляет объект из базы
         /// </summary>
+        /// <typeparam name="T">Тип</typeparam>
         /// <param name="id">Идентификатор объекта для удаления</param>
         public void DeleteByID<T>(object id) where T : new()
         {
@@ -615,26 +621,32 @@ namespace NanoORMMySQL
         {
             var type = typeof(T);
             string tableName = GetTableName(type);
-            CreateTable<T>(tableName);
+            CreateTable(type, tableName);
+        }
+
+        public void CreateTable(Type type)
+        {
+            string tableName = GetTableName(type);
+            CreateTable(type, tableName);
         }
 
         /// <summary>
         /// Создает таблицу
         /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
+        /// <param name="type">Тип</param>
         /// <param name="tableName">Имя таблицы</param>
-        public void CreateTable<T>(string tableName)
+        public void CreateTable(Type type, string tableName)
         {
-            var type = typeof(T);
             var indexList = new List<string>();
             string primaryKeyText = string.Empty;
             var sb = new StringBuilder();
             sb.AppendFormat("CREATE TABLE IF NOT EXISTS {0} (", tableName).AppendLine();
             foreach (var property in type.GetProperties())
             {
-                var colName = property.Name;
+                var colName = GetColName(property);
                 if (IsNoMapAttribute(property))
                     continue;
+
                 bool primaryKey = IsPrimaryKey(property);
                 var att = property.GetCustomAttributes(typeof(AutoIncrement), true);
                 bool autoIncrement = (att != null && att.Length != 0);
@@ -669,6 +681,11 @@ namespace NanoORMMySQL
                 throw new Exception(sqlres.Message);
         }
 
+        private string GetChildrenTableName(string tableName, string colName, Type propertyType)
+        {
+            return string.Concat(tableName, "_", colName, "_", propertyType.GetGenericArguments().First().Name);
+        }
+
         /// <summary>
         /// Уничтожает таблицу
         /// </summary>
@@ -677,6 +694,16 @@ namespace NanoORMMySQL
         {
             var type = typeof(T);
             var tableName = type.Name;
+            DropTable(type, tableName);
+        }
+
+        /// <summary>
+        /// Уничтожает таблицу
+        /// </summary>
+        /// <param name="type">Тип</param>
+        /// <param name="tableName">Имя таблицы</param>
+        public void DropTable(Type type, string tableName)
+        {
             foreach (var attribute in type.GetCustomAttributes(false))
             {
                 if (attribute.GetType() == typeof(TableName))
@@ -685,7 +712,8 @@ namespace NanoORMMySQL
                     break;
                 }
             }
-            var query = string.Format("DROP TABLE {0};", tableName);
+
+            var query = string.Format("DROP TABLE IF EXISTS {0};", tableName);
             var sqlres = ExecuteNoData(query);
             if (sqlres.HasError)
                 throw new Exception(sqlres.Message);
@@ -716,6 +744,7 @@ namespace NanoORMMySQL
             {
                 if (IsNoMapAttribute(property))
                     continue;
+
                 var colName = GetColName(property);
                 property.SetPropertyValue(row[colName], res);
             }
@@ -1173,6 +1202,7 @@ namespace NanoORMMySQL
         /// <summary>
         /// Конструктор
         /// </summary>
+        /// <param name="tableName">Имя таблицы</param>
         public SQLQuery(string tableName)
         {
             _globalTableName = tableName;
@@ -1426,6 +1456,8 @@ namespace NanoORMMySQL
         /// <returns></returns>
         public object Avg(Expression<Func<T, object>> member)
         {
+            if (member == null)
+                throw new ArgumentNullException(nameof(member));
             if (_orm == null)
                 throw new Exception("Not set ORM");
             var query = string.Format("SELECT AVG(*) FROM `{0}` ", GetTableName(typeof(T)));
@@ -1678,25 +1710,33 @@ namespace NanoORMMySQL
             {
                 case ExpressionType.Constant:
                     if (expression.Type == typeof(DateTime))
+                    {
                         return
-                            ((DateTime)((ConstantExpression)expression).Value).ConvertToUnixTimestamp()
-                                .ToString(CultureInfo.InvariantCulture);
+                           ((DateTime)((ConstantExpression)expression).Value).ConvertToUnixTimestamp()
+                               .ToString(CultureInfo.InvariantCulture);
+                    }
+
                     if (expression.Type == typeof(bool))
                         return ((bool)((ConstantExpression)expression).Value) ? "1" : "0";
                     if (expression.Type == typeof(byte[]))
+                    {
                         return string.Concat("'",
-                            Convert.ToBase64String((byte[])((ConstantExpression)expression).Value), "'");
-                    if (expression.Type == typeof(string) || expression.Type == typeof(char) ||
-                        expression.Type == typeof(Guid))
+                           Convert.ToBase64String((byte[])((ConstantExpression)expression).Value), "'");
+                    }
+
+                    if (expression.Type == typeof(string) || expression.Type == typeof(char)
+                        || expression.Type == typeof(Guid))
+                    {
                         return string.Concat("'", ((ConstantExpression)expression).Value.ToString(), "'");
+                    }
+
                     return ((ConstantExpression)expression).Value.ToString();
 
                 case ExpressionType.Convert:
                     var c = expression as UnaryExpression;
                     if (c != null)
                     {
-                        var op = c.Operand as BinaryExpression;
-                        if (op != null)
+                        if (c.Operand is BinaryExpression op)
                         {
                             var str1 = ExpressionToString(op.Left, connectType);
                             var str2 = ExpressionToString(op.Right, connectType);
@@ -1727,9 +1767,13 @@ namespace NanoORMMySQL
                     var exp = expression as MemberExpression;
                     if (exp == null)
                         throw new Exception(string.Format("Expression is not MemberExpression: {0}", expression));
-                    if (exp.Expression.NodeType == ExpressionType.Parameter)
+                    if (exp.Expression != null && exp.Expression.NodeType == ExpressionType.Parameter)
                         return exp.Member.Name;
                     var value = Expression.Lambda(expression).Compile().DynamicInvoke();
+                    if (value is string || value is char || value is Guid)
+                        value = string.Concat("'", value.ToString(), "'");
+                    if (value is DateTime)
+                        value = ((DateTime)value).ConvertToUnixTimestamp();
                     return value.ToString();
 
                 default:
