@@ -14,923 +14,11 @@ using System.Reflection;
 using System.Text;
 using MySql.Data.MySqlClient;
 using System.Collections;
+using System.Diagnostics;
+using System.Threading;
 
 namespace NanoORMMySQL
 {
-    public class NanoOrm : IDisposable
-    {
-        /// <summary>
-        /// Последний запрос к базе данных
-        /// </summary>
-        public string LastQuery { get; private set; }
-
-        public string ConnectionString { get; }
-
-        public MySqlConnection Connection { get; private set; }
-
-        /// <summary>
-        /// Конструктор
-        /// </summary>
-        /// <param name="connectionString">Строка подключения</param>
-        public NanoOrm(string connectionString)
-        {
-            ConnectionString = connectionString;
-        }
-
-        #region ORM
-
-        /// <summary>
-        /// Возращает строку для бекапа таблицы
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <returns></returns>
-        public string Backup<T>() where T : new()
-        {
-            var tableName = GetTableName(typeof(T));
-            return BackupTable(tableName);
-        }
-
-        /// <summary>
-        /// Возращает строку для бекапа таблицы
-        /// </summary>
-        /// <param name="tblName">Имя таблицы</param>
-        /// <returns></returns>
-        public string BackupTable(string tblName)
-        {
-            var fileText = new StringBuilder();
-            fileText.AppendLine(string.Concat("DROP TABLE IF EXISTS `", tblName, "`;"));
-            var query = string.Format("SHOW CREATE TABLE `{0}`", tblName);
-            var sqlRaw = ExecuteData(query);
-            if (sqlRaw.HasError)
-                throw new Exception(sqlRaw.Message);
-            fileText.Append(sqlRaw.Table.Rows[0].ItemArray[1]).AppendLine(";");
-            fileText.Append("LOCK TABLES `").Append(tblName).AppendLine("` WRITE;");
-            var raw2 = ExecuteData(string.Concat("SELECT * FROM `", tblName, "`"));
-            string beginLine = string.Concat("INSERT INTO `", tblName, "`");
-            var sb = new StringBuilder();
-            int j = 0;
-
-            foreach (DataRow row in raw2.Table.Rows)
-            {
-                string line = string.Empty;
-                if (j == 0)
-                {
-                    line += string.Concat(beginLine, " VALUES");
-                }
-                line += " (";
-                int colCount = row.ItemArray.Length;
-                for (int i = 0; i < colCount; i++)
-                {
-                    string value = row[i].ToString();
-                    Type t = row[i].GetType();
-                    if (t == typeof(string))
-                        value = string.Concat("'", value.Replace("\r", string.Empty).Replace("\n", string.Empty), "'");
-                    line += value;
-                    if (i < colCount - 1)
-                        line += ",";
-                }
-                line += ")";
-                if (j == 1000)
-                {
-                    sb.Append(line);
-                    fileText.Append(sb).AppendLine(";");
-                    sb = new StringBuilder();
-                    j = 0;
-                    continue;
-                }
-                line += ",";
-                sb.Append(line);
-                j++;
-            }
-            if (sb.Length != 0)
-                fileText.Append(sb.ToString(0, sb.Length - 1)).AppendLine(";");
-            fileText.AppendLine("UNLOCK TABLES;");
-            return fileText.ToString();
-        }
-
-        /// <summary>
-        /// Стартует транзакцию
-        /// </summary>
-        public void BeginTransaction()
-        {
-            var sqlRes = ExecuteNoData("START TRANSACTION;");
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-        }
-
-        /// <summary>
-        /// Подтверждает транзакицю
-        /// </summary>
-        public void CommitTransaction()
-        {
-            var sqlRes = ExecuteNoData("COMMIT;");
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-        }
-
-        /// <summary>
-        /// Откатывает транзакцию
-        /// </summary>
-        public void RollbackTransaction()
-        {
-            var sqlRes = ExecuteNoData("ROLLBACK;");
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-        }
-
-        /// <summary>
-        /// Возвращает кол-во записей в таблице
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <returns>Кол-во записей</returns>
-        public int Count<T>() where T : new()
-        {
-            return Count<T>(string.Empty);
-        }
-
-        /// <summary>
-        /// Возвращает кол-во записей в таблице при условии
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="where">Условие</param>
-        /// <returns>Кол-во записей</returns>
-        /// <example>Count("WHERE id &gt; 1000")</example>
-        public int Count<T>(string where) where T : new()
-        {
-            var type = typeof(T);
-            var tableName = GetTableName(type);
-            var query = string.Format("SELECT COUNT(*) FROM {0} {1};", tableName, where);
-            var sqlRes = ExecuteData(query);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return Convert.ToInt32(sqlRes.Table.Rows[0].ItemArray[0]);
-        }
-
-        /// <summary>
-        /// Возвращает записи по sql запросу
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="sql">Запрос</param>
-        /// <returns>Список объектов типа Т</returns>
-        public List<T> Query<T>(string sql) where T : new()
-        {
-            var sqlRes = ExecuteData(sql);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return (from DataRow row in sqlRes.Table.Rows select RowToObject<T>(row)).ToList();
-        }
-
-        /// <summary>
-        /// Возвращает записи по параметризированному sql запросу
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="sql">Запрос</param>
-        /// <param name="param">Массив параметров</param>
-        /// <returns>Список объектов типа Т</returns>
-        /// <code>
-        /// Query("SELECT * FROM testclass WHERE id = ?",1000)
-        /// </code>
-        public List<T> Query<T>(string sql, params object[] param) where T : new()
-        {
-            var arr = sql.Split(new[] { '?' });
-            var sb = new StringBuilder();
-            for (int i = 0; i < param.Length; i++)
-            {
-                var val = param[i];
-                if (val is string)
-                    val = string.Format("'{0}'", val);
-                sb.Append(arr[i]);
-                sb.Append(val);
-            }
-
-            var sqlRes = ExecuteData(sb.ToString());
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return (from DataRow row in sqlRes.Table.Rows select RowToObject<T>(row)).ToList();
-        }
-
-        /// <summary>
-        /// Возвращает 1 запись по идентификатору
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="id">Идентификатор</param>
-        /// <returns>Объект типа Т</returns>
-        public T SelectOne<T>(object id) where T : new()
-        {
-            var type = typeof(T);
-            var primaryKeyCollumn = string.Empty;
-            foreach (var property in type.GetProperties())
-            {
-                if (IsPrimaryKey(property))
-                {
-                    primaryKeyCollumn = GetColName(property);
-                    break;
-                }
-            }
-            return SelectOne<T>(string.Format("WHERE {0} = {1}", primaryKeyCollumn, id));
-        }
-
-        /// <summary>
-        /// Возвращает 1 запись по идентификатору
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="id">Идентификатор</param>
-        /// <param name="tableName">Имя таблицы</param>
-        /// <returns>Объект типа Т</returns>
-        public T SelectOne<T>(object id, string tableName) where T : new()
-        {
-            var type = typeof(T);
-            var primaryKeyCollumn = string.Empty;
-            foreach (var property in type.GetProperties())
-            {
-                if (IsPrimaryKey(property))
-                {
-                    primaryKeyCollumn = GetColName(property);
-                    break;
-                }
-            }
-            return SelectOne<T>(string.Format("WHERE {0} = {1}", primaryKeyCollumn, id), tableName);
-        }
-
-        /// <summary>
-        /// Возвращает 1 запись по условию
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="where">Условие</param>
-        /// <returns>Объект типа Т</returns>
-        public T SelectOne<T>(string where) where T : new()
-        {
-            var res = Select<T>(where + " LIMIT 1");
-            if (res.Count == 0)
-                return new T();
-            return res[0];
-        }
-
-        /// <summary>
-        /// Возвращает 1 запись по условию
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="where">Условие</param>
-        /// <param name="tableName">Имя таблицы</param>
-        /// <returns>Объект типа Т</returns>
-        public T SelectOne<T>(string where, string tableName) where T : new()
-        {
-            var res = Select<T>(where + " LIMIT 1", tableName);
-            if (res.Count == 0)
-                return new T();
-            return res[0];
-        }
-
-        /// <summary>
-        /// Возвращает объект запроса для построения запроса подобоно LINQ
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <returns>Список объектов типа Т</returns>
-        public SQLQuery<T> Table<T>() where T : class, new()
-        {
-            return new SQLQuery<T>(this);
-        }
-
-        /// <summary>
-        /// Возвращает объект запроса для построения запроса подобоно LINQ
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="tableName">Имя таблицы</param>
-        /// <returns>Список объектов типа Т</returns>
-        public SQLQuery<T> Table<T>(string tableName) where T : class, new()
-        {
-            return new SQLQuery<T>(this, tableName);
-        }
-
-        /// <summary>
-        /// Возвращает все сохранненые в таблице записи
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <returns>Список объектов типа Т</returns>
-        public List<T> Select<T>() where T : new()
-        {
-            return Select<T>(string.Empty);
-        }
-
-        /// <summary>
-        /// Возвращает список объектов по условию
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="where">Условие</param>
-        /// <returns>Список объектов типа Т</returns>
-        public List<T> Select<T>(string where) where T : new()
-        {
-            var type = typeof(T);
-            string tableName = GetTableName(type);
-            return Select<T>(where, tableName);
-        }
-
-        /// <summary>
-        /// Возвращает список объектов по условию
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="where">Условие</param>
-        /// <param name="tableName">Имя таблицы</param>
-        /// <returns>Список объектов типа Т</returns>
-        public List<T> Select<T>(string where, string tableName) where T : new()
-        {
-            var query = string.Format("SELECT * FROM {0} {1};", tableName, where);
-            var sqlRes = ExecuteData(query);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-
-            return (from DataRow row in sqlRes.Table.Rows select RowToObject<T>(row)).ToList();
-        }
-
-        /// <summary>
-        /// Удаляет объект из базы
-        /// </summary>
-        /// <param name="obj">Объект для удаления</param>
-        public void Delete(object obj)
-        {
-            if (obj == null)
-                return;
-            var type = obj.GetType();
-            string tableName = GetTableName(type);
-            Delete(obj, tableName);
-        }
-
-        /// <summary>
-        /// Удаляет объект из базы
-        /// </summary>
-        /// <param name="obj">Объект для удаления</param>
-        /// <param name="tableName">Имя таблицы</param>
-        /// <remarks>У объекта обязательно должен быть указан атрибут PrimaryKey</remarks>
-        public void Delete(object obj, string tableName)
-        {
-            var type = obj.GetType();
-            var primaryKeyCollumn = string.Empty;
-            object primaryKeyData = null;
-            foreach (var property in type.GetProperties())
-            {
-                if (IsPrimaryKey(property))
-                {
-                    primaryKeyCollumn = GetColName(property);
-                    primaryKeyData = property.GetValue(obj, null);
-                    break;
-                }
-            }
-            if (primaryKeyData == null)
-                throw new Exception("PrimaryKey not found");
-            var query = string.Format("DELETE FROM {0} WHERE {1} = {2};", tableName, primaryKeyCollumn, primaryKeyData);
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        /// <summary>
-        /// Удаляет объект из базы
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="id">Идентификатор объекта для удаления</param>
-        public void DeleteByID<T>(object id) where T : new()
-        {
-            var type = typeof(T);
-            string tableName = GetTableName(type);
-            DeleteByID<T>(id, tableName);
-        }
-
-        /// <summary>
-        /// Удаляет объект из базы по идентификатору
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="id">Идентификатор</param>
-        /// <param name="tableName"></param>
-        public void DeleteByID<T>(object id, string tableName) where T : new()
-        {
-            var type = typeof(T);
-            var primaryKeyCollumn = string.Empty;
-            foreach (var property in type.GetProperties())
-            {
-                if (IsPrimaryKey(property))
-                {
-                    primaryKeyCollumn = GetColName(property);
-                    break;
-                }
-            }
-            if (string.IsNullOrEmpty(primaryKeyCollumn))
-                throw new Exception("PrimaryKey not found");
-            var query = string.Format("DELETE FROM {0} WHERE {1} = {2};", tableName, primaryKeyCollumn, id);
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        /// <summary>
-        /// Удаляет объекты из базы по условию
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="where">Условие</param>
-        public void DeleteByWhere<T>(string where)
-        {
-            var type = typeof(T);
-            string tableName = GetTableName(type);
-            var query = string.Format("DELETE FROM {0} {1};", tableName, where);
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        /// <summary>
-        /// Удаляет все.
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        public void DeleteAll<T>()
-        {
-            var type = typeof(T);
-            string tableName = GetTableName(type);
-            var query = string.Format("DELETE FROM {0};", tableName);
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        /// <summary>
-        /// Обновляет объект в базе
-        /// </summary>
-        /// <param name="obj">Объект</param>
-        public void Update(object obj)
-        {
-            var type = obj.GetType();
-            string tableName = GetTableName(type);
-            Update(obj, tableName);
-        }
-
-        /// <summary>
-        /// Обновляет объект в базе
-        /// </summary>
-        /// <param name="obj">Объект</param>
-        /// <param name="tableName">Имя таблицы</param>
-        public void Update(object obj, string tableName)
-        {
-            var type = obj.GetType();
-            var sb = new StringBuilder();
-
-            sb.AppendFormat("UPDATE `{0}` SET ", tableName).AppendLine();
-            var primaryKeyCollumn = string.Empty;
-            object primaryKeyData = null;
-            foreach (var property in type.GetProperties())
-            {
-                if (IsNoMapAttribute(property))
-                    continue;
-                if (IsPrimaryKey(property))
-                {
-                    primaryKeyCollumn = GetColName(property);
-                    primaryKeyData = property.GetValue(obj, null);
-                    continue;
-                }
-
-                var colName = GetColName(property);
-
-                var tmpl = "`{0}` = {1},";
-                if (IsString(property))
-                    tmpl = "`{0}` = '{1}',";
-                var value = property.GetValue(obj, null);
-                value = ConvertValue(property, value);
-                if (!IsString(property))
-                    sb.AppendFormat(tmpl, colName, value.ToString().Replace(",", ".")).AppendLine();
-                else
-                    sb.AppendFormat(tmpl, colName, value).AppendLine();
-            }
-            if (primaryKeyData == null)
-                throw new Exception("PrimaryKey not found");
-            var query = sb.ToString();
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1);
-            query += string.Format(" WHERE `{0}`.`{1}` = {2};", tableName, primaryKeyCollumn, primaryKeyData);
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        /// <summary>
-        /// Обновляет список объектов в базе
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="list">Список объектов</param>
-        public void UpdateAll<T>(object list) where T : new()
-        {
-            BeginTransaction();
-            try
-            {
-                foreach (var obj in (List<T>)list)
-                    Update(obj);
-            }
-            catch
-            {
-                RollbackTransaction();
-                return;
-            }
-            CommitTransaction();
-        }
-
-        /// <summary>
-        /// Сохраняет объект в базе
-        /// </summary>
-        /// <param name="obj">Объект</param>
-        public void Insert(object obj)
-        {
-            var type = obj.GetType();
-            string tableName = GetTableName(type);
-            Insert(obj, tableName);
-        }
-
-        /// <summary>
-        /// Сохраняет объект в базе
-        /// </summary>
-        /// <param name="obj">Объект</param>
-        /// <param name="tableName">Имя таблицы</param>
-        public void Insert(object obj, string tableName)
-        {
-            var type = obj.GetType();
-
-            var query = string.Format("INSERT INTO `{0}`(", tableName);
-            var query2 = "VALUES (";
-
-            foreach (var property in type.GetProperties())
-            {
-                if (IsNoMapAttribute(property))
-                    continue;
-                if (IsPrimaryKey(property))
-                    continue;
-
-                query += string.Format("`{0}`,", GetColName(property));
-                var tmpl = "{0},";
-                var value = property.GetValue(obj, null);
-                if (IsString(property))
-                    tmpl = "'{0}',";
-                if (value == null && IsString(property))
-                {
-                    value = string.Empty;
-                }
-                else
-                {
-                    value = ConvertValue(property, value);
-                }
-                if (!IsString(property))
-                    query2 += string.Format(tmpl, value.ToString().Replace(",", "."));
-                else
-                    query2 += string.Format(tmpl, value);
-            }
-            query = query.Remove(query.LastIndexOf(",", StringComparison.Ordinal), 1) + ")";
-            query2 = query2.Remove(query2.LastIndexOf(",", StringComparison.Ordinal), 1) + ");";
-            query += query2 + "SELECT LAST_INSERT_ID();";
-            var sqlres = ExecuteData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-            foreach (var property in type.GetProperties())
-            {
-                if (IsPrimaryKey(property))
-                {
-                    property.SetPropertyValue(sqlres.Table.Rows[0].ItemArray[0], obj);
-                    break;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Сохраняет список объектов в базе
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        /// <param name="list">Список объектов</param>
-        public void InsertAll<T>(object list) where T : new()
-        {
-            BeginTransaction();
-            try
-            {
-                foreach (var obj in (List<T>)list)
-                    Insert(obj);
-            }
-            catch
-            {
-                RollbackTransaction();
-                return;
-            }
-            CommitTransaction();
-        }
-
-        /// <summary>
-        /// СОздает таблицу
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        public void CreateTable<T>()
-        {
-            var type = typeof(T);
-            string tableName = GetTableName(type);
-            CreateTable(type, tableName);
-        }
-
-        public void CreateTable(Type type)
-        {
-            string tableName = GetTableName(type);
-            CreateTable(type, tableName);
-        }
-
-        /// <summary>
-        /// Создает таблицу
-        /// </summary>
-        /// <param name="type">Тип</param>
-        /// <param name="tableName">Имя таблицы</param>
-        public void CreateTable(Type type, string tableName)
-        {
-            var indexList = new List<string>();
-            string primaryKeyText = string.Empty;
-            var sb = new StringBuilder();
-            sb.AppendFormat("CREATE TABLE IF NOT EXISTS {0} (", tableName).AppendLine();
-            foreach (var property in type.GetProperties())
-            {
-                var colName = GetColName(property);
-                if (IsNoMapAttribute(property))
-                    continue;
-
-                bool primaryKey = IsPrimaryKey(property);
-                var att = property.GetCustomAttributes(typeof(AutoIncrement), true);
-                bool autoIncrement = (att != null && att.Length != 0);
-
-                att = property.GetCustomAttributes(typeof(NotNULL), true);
-                bool notNull = (att != null && att.Length != 0);
-
-                att = property.GetCustomAttributes(typeof(Indexed), true);
-                if (att != null && att.Length != 0) indexList.Add(colName);
-
-                colName = GetColName(property);
-                var colType = GetColType(property);
-                sb.AppendFormat("\t`{0}` {1}", colName, colType);
-                if (primaryKey)
-                {
-                    primaryKeyText = string.Format(" PRIMARY KEY(`{0}`)", colName);
-                }
-                if (autoIncrement)
-                    sb.Append(" AUTO_INCREMENT");
-                if (notNull)
-                    sb.Append(" NOT NULL");
-                sb.AppendLine(",");
-            }
-            sb.Append(primaryKeyText).Append(");");
-            var query = sb.ToString();
-            query = indexList.Aggregate(query,
-                (current, colindex) =>
-                    current +
-                    string.Format("CREATE INDEX  IF NOT EXISTS name_{0} ON {1}({2});", colindex, tableName, colindex));
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        private string GetChildrenTableName(string tableName, string colName, Type propertyType)
-        {
-            return string.Concat(tableName, "_", colName, "_", propertyType.GetGenericArguments().First().Name);
-        }
-
-        /// <summary>
-        /// Уничтожает таблицу
-        /// </summary>
-        /// <typeparam name="T">Тип</typeparam>
-        public void DropTable<T>()
-        {
-            var type = typeof(T);
-            var tableName = type.Name;
-            DropTable(type, tableName);
-        }
-
-        /// <summary>
-        /// Уничтожает таблицу
-        /// </summary>
-        /// <param name="type">Тип</param>
-        /// <param name="tableName">Имя таблицы</param>
-        public void DropTable(Type type, string tableName)
-        {
-            foreach (var attribute in type.GetCustomAttributes(false))
-            {
-                if (attribute.GetType() == typeof(TableName))
-                {
-                    tableName = ((TableName)attribute).Name;
-                    break;
-                }
-            }
-
-            var query = string.Format("DROP TABLE IF EXISTS {0};", tableName);
-            var sqlres = ExecuteNoData(query);
-            if (sqlres.HasError)
-                throw new Exception(sqlres.Message);
-        }
-
-        #endregion ORM
-
-        #region Private Methods
-
-        private object ConvertValue(PropertyInfo property, object value)
-        {
-            if (property.PropertyType == typeof(DateTime))
-                value = ((DateTime)value).ConvertToUnixTimestamp().ToString(CultureInfo.InvariantCulture);
-            if (property.PropertyType == typeof(byte[]))
-                value = Convert.ToBase64String((byte[])value);
-            if (property.PropertyType == typeof(bool))
-                value = ((bool)value) ? "1" : "0";
-            if (property.PropertyType != typeof(DateTime) && property.PropertyType != typeof(bool) && value != null)
-                value = value.ToString();
-            return value;
-        }
-
-        private T RowToObject<T>(DataRow row) where T : new()
-        {
-            var res = new T();
-            var type = typeof(T);
-            foreach (var property in type.GetProperties())
-            {
-                if (IsNoMapAttribute(property))
-                    continue;
-
-                var colName = GetColName(property);
-                property.SetPropertyValue(row[colName], res);
-            }
-
-            return res;
-        }
-
-        private string GetColType(PropertyInfo property)
-        {
-            object[] att = property.GetCustomAttributes(typeof(CollumnType), true);
-            if (att != null && att.Length != 0)
-                return ((CollumnType)att[0]).Type;
-            if (property.PropertyType == typeof(int))
-                return "INT";
-            if (property.PropertyType == typeof(uint))
-                return "INT UNSIGNED";
-            if (property.PropertyType == typeof(long))
-                return "BIGINT";
-            if (property.PropertyType == typeof(ulong))
-                return "BIGINT UNSIGNED";
-            if (property.PropertyType == typeof(sbyte))
-                return "TINYINT";
-            if (property.PropertyType == typeof(bool))
-                return "BIT";
-            if (property.PropertyType == typeof(float))
-                return "FLOAT";
-            if (property.PropertyType == typeof(double))
-                return "DOUBLE";
-            if (property.PropertyType == typeof(DateTime))
-                return "DOUBLE";
-            if (property.PropertyType == typeof(byte[]))
-                return "LONGTEXT";
-            if (property.PropertyType == typeof(Guid))
-                return "VARCHAR(32)";
-            if (IsString(property))
-                return "TEXT";
-
-            return "TEXT";
-        }
-
-        private string GetTableName(Type type)
-        {
-            var tableName = type.Name;
-            foreach (var attribute in type.GetCustomAttributes(false))
-            {
-                if (attribute.GetType() == typeof(TableName))
-                {
-                    tableName = ((TableName)attribute).Name;
-                    break;
-                }
-            }
-
-            return tableName;
-        }
-
-        private bool IsNoMapAttribute(PropertyInfo propertyInfo)
-        {
-            var att = propertyInfo.GetCustomAttributes(typeof(NoMap), true);
-            return att != null && att.Length != 0;
-        }
-
-        private bool IsPrimaryKey(PropertyInfo propertyInfo)
-        {
-            var att = propertyInfo.GetCustomAttributes(typeof(PrimaryKey), true);
-            return att != null && att.Length != 0;
-        }
-
-        private bool IsString(PropertyInfo propertyInfo)
-        {
-            if (propertyInfo.PropertyType == typeof(string))
-                return true;
-            if (propertyInfo.PropertyType == typeof(Guid))
-                return true;
-            return false;
-        }
-
-        private string GetColName(PropertyInfo propertyInfo)
-        {
-            var att = propertyInfo.GetCustomAttributes(typeof(CollumnName), true);
-            if (att != null && att.Length != 0)
-                return ((CollumnName)att[0]).Name;
-            return propertyInfo.Name;
-        }
-
-        #endregion Private Methods
-
-        #region DB Execute
-
-        /// <summary>
-        /// Выполняет запрос в базе без возвращения данных
-        /// </summary>
-        /// <param name="query">Запрос</param>
-        /// <returns>Результат запроса</returns>
-        public SQLReturn ExecuteNoData(string query)
-        {
-            LastQuery = (string)query.Clone();
-            var result = new SQLReturn();
-            try
-            {
-                if (Connection == null)
-                {
-                    Connection = new MySqlConnection(ConnectionString);
-                    Connection.Open();
-                }
-                using (var commRc = new MySqlCommand(query, Connection))
-                {
-                    try
-                    {
-                        commRc.ExecuteNonQuery();
-                        result.HasError = false;
-                    }
-                    catch (Exception ex)
-                    {
-                        result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
-                        result.HasError = true;
-                    }
-                }
-            }
-            catch (Exception ex) //Этот эксепшн на случай отсутствия соединения с сервером.
-            {
-                result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
-                result.HasError = true;
-            }
-            return result;
-        }
-
-        /// <summary>
-        /// Выполняет запрос в базе с возвращением данных
-        /// </summary>
-        /// <param name="query">Запрос</param>
-        /// <returns>Результат запроса</returns>
-        public SQLReturnData ExecuteData(string query)
-        {
-            LastQuery = (string)query.Clone();
-            var result = new SQLReturnData();
-            try
-            {
-                if (Connection == null)
-                {
-                    Connection = new MySqlConnection(ConnectionString);
-                    Connection.Open();
-                }
-                using (var commRc = new MySqlCommand(query, Connection))
-                {
-                    try
-                    {
-                        var adapterP = new MySqlDataAdapter
-                        {
-                            SelectCommand = commRc
-                        };
-                        var ds1 = new DataSet();
-                        adapterP.Fill(ds1);
-                        result.Table = ds1.Tables[0];
-                    }
-                    catch (Exception ex)
-                    {
-                        result.HasError = true;
-                        result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
-                    }
-                }
-            }
-            catch (Exception ex) //Этот эксепшн на случай отсутствия соединения с сервером.
-            {
-                result.Message = string.Format("{0}=>{1}\n[FULL QUERY: {2}]", ex.Message, ex.StackTrace, query);
-                result.HasError = true;
-            }
-            return result;
-        }
-
-        #endregion DB Execute
-
-        /// <summary>
-        /// Performs application-defined tasks associated with freeing, releasing, or resetting
-        /// unmanaged resources.
-        /// </summary>
-        /// <filterpriority>2</filterpriority>
-        public void Dispose()
-        {
-            if (Connection != null)
-            {
-                Connection.Close();
-                Connection.Dispose();
-            }
-        }
-    }
-
     #region Result Classes
 
     /// <summary>
@@ -969,7 +57,7 @@ namespace NanoORMMySQL
     /// <summary>
     /// Результат запроса к базе с возвращением данных
     /// </summary>
-    public class SQLReturnData : SQLReturn, ISQLReturnData
+    public class SQLReturnData : SQLReturn, ISQLReturnData, IDisposable
     {
         /// <summary>
         /// Данные запроса
@@ -980,7 +68,8 @@ namespace NanoORMMySQL
         /// Имплицирует тип Exception на себя
         /// </summary>
         /// <param name="exp">Объект ошибки</param>
-        public SQLReturnData(Exception exp) : base(exp)
+        public SQLReturnData(Exception exp)
+            : base(exp)
         {
         }
 
@@ -999,6 +88,8 @@ namespace NanoORMMySQL
         {
             Table = table;
         }
+
+        public void Dispose() => Table?.Dispose();
     }
 
     #endregion Result Classes
@@ -1175,27 +266,383 @@ namespace NanoORMMySQL
             var diff = dateTime - origin;
             return Math.Floor(diff.TotalSeconds);
         }
+
+        public static string GetSQLValue(this object value)
+        {
+            if (value is string || value is char || value is Guid)
+                return string.Concat("'", value.ToString(), "'");
+            if (value.GetType() == typeof(bool))
+                return ((bool)value) ? "1" : "0";
+            if (value is DateTime)
+                ((DateTime)value).ConvertToUnixTimestamp();
+            return value.ToString();
+        }
     }
 
     #endregion Extension
+
+    public abstract class SQLBase<T>
+    {
+        protected NanoOrmMySQL _orm;
+        protected string _limit = string.Empty;
+        protected List<Condition> _conditions = new List<Condition>();
+        protected string _globalTableName = string.Empty;
+
+        #region Конструкторы
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        protected SQLBase()
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="tableName">Имя таблицы</param>
+        protected SQLBase(string tableName)
+        {
+            _globalTableName = tableName;
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        protected SQLBase(NanoOrmMySQL orm)
+        {
+            _orm = orm;
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        /// <param name="tableName">Имя таблицы</param>
+        protected SQLBase(NanoOrmMySQL orm, string tableName)
+        {
+            _orm = orm;
+            _globalTableName = tableName;
+        }
+
+        #endregion Конструкторы
+
+        /// <summary>
+        /// Формирует из списка условий строку Where
+        /// </summary>
+        /// <param name="sbQuery"></param>
+        protected void AddWhere(StringBuilder sbQuery)
+        {
+            var where = _conditions.Find(c => c.ConnectType == ExpressionConnectType.WHERE);
+            if (where != null)
+            {
+                sbQuery.AppendLine(where.ToString());
+                _conditions.Remove(where);
+                foreach (var condition in _conditions)
+                    sbQuery.AppendLine(condition.ToString());
+
+                _conditions.Add(where);
+            }
+        }
+
+        /// <summary>
+        /// Возвращает имя столбца таблицы
+        /// </summary>
+        /// <param name="member">Условие</param>
+        /// <returns></returns>
+        protected string GetColName(Expression<Func<T, object>> member)
+        {
+            var body = member.Body as UnaryExpression;
+            if (body == null)
+            {
+                var mem = member.Body as MemberExpression;
+                if (mem == null)
+                    throw new Exception(string.Format("member not MemberExpression: {0}", member));
+                return mem.Member.Name;
+            }
+            return ((MemberExpression)body.Operand).Member.Name;
+        }
+
+        /// <summary>
+        ///Формирует список условий
+        /// </summary>
+        /// <param name="expression">Условие</param>
+        /// <param name="connectType">Тип соединения</param>
+        /// <param name="conditions">Список условий</param>
+        /// <returns></returns>
+        protected string ExpressionToString(Expression expression, ExpressionConnectType connectType, List<Condition> conditions)
+        {
+            switch (expression.NodeType)
+            {
+                case ExpressionType.Constant:
+                    if (expression.Type == typeof(DateTime))
+                    {
+                        return
+                            ((DateTime)((ConstantExpression)expression).Value).ConvertToUnixTimestamp()
+                                .ToString(CultureInfo.InvariantCulture);
+                    }
+
+                    if (expression.Type == typeof(bool))
+                        return ((bool)((ConstantExpression)expression).Value) ? "1" : "0";
+                    if (expression.Type == typeof(byte[]))
+                    {
+                        return string.Concat("'",
+                            Convert.ToBase64String((byte[])((ConstantExpression)expression).Value), "'");
+                    }
+
+                    if (expression.Type == typeof(string) || expression.Type == typeof(char)
+                        || expression.Type == typeof(Guid))
+                    {
+                        return string.Concat("'", ((ConstantExpression)expression).Value.ToString(), "'");
+                    }
+
+                    return ((ConstantExpression)expression).Value.ToString();
+
+                case ExpressionType.Convert:
+                    var c = expression as UnaryExpression;
+                    if (c != null)
+                    {
+                        if (c.Operand is BinaryExpression)
+                        {
+                            var op = c.Operand as BinaryExpression;
+                            var str1 = ExpressionToString(op.Left, connectType, conditions);
+                            var str2 = ExpressionToString(op.Right, connectType, conditions);
+                            var cond = new Condition
+                            {
+                                Left = str1,
+                                Right = str2,
+                                Type = op.NodeType,
+                                ConnectType = connectType
+                            };
+                            conditions.Add(cond);
+                            return ToString();
+                        }
+                        throw new Exception(string.Format("Expression is not BinaryExpression: {0}", expression));
+                    }
+                    throw new Exception(string.Format("Expression is not UnaryExpression: {0}", expression));
+
+                case ExpressionType.Lambda:
+                    var l = expression as LambdaExpression;
+                    if (l == null)
+                        throw new Exception(string.Format("Expression is not LambdaExpression: {0}", expression));
+                    return ExpressionToString(l.Body, connectType, conditions);
+
+                case ExpressionType.Parameter:
+                    return ((ParameterExpression)expression).Name;
+
+                case ExpressionType.MemberAccess:
+                    var exp = expression as MemberExpression;
+                    if (exp == null)
+                        throw new Exception(string.Format("Expression is not MemberExpression: {0}", expression));
+                    if (exp.Expression?.NodeType == ExpressionType.Parameter)
+                        return exp.Member.Name;
+                    var func = Expression.Lambda(expression).Compile();
+                    //object value = func.Method.Invoke(func.Target, null);
+                    object value = func.DynamicInvoke();
+                    return value.GetSQLValue();
+
+                default:
+                    return ((MemberExpression)expression).Member.Name;
+            }
+        }
+
+        /// <summary>
+        /// Возвращает имя таблицы
+        /// </summary>
+        /// <param name="type">Тип</param>
+        /// <returns></returns>
+        protected string GetTableName(Type type)
+        {
+            if (!string.IsNullOrEmpty(_globalTableName))
+                return _globalTableName;
+            var tableName = type.Name;
+            foreach (var attribute in type.GetCustomAttributes(false))
+            {
+                if (attribute.GetType() == typeof(TableName))
+                {
+                    tableName = ((TableName)attribute).Name;
+                    break;
+                }
+            }
+
+            return tableName;
+        }
+
+        protected void AddCondition(Expression<Func<T, object>> member, ExpressionConnectType connectType,
+            string searchPattern)
+        {
+            var col = GetColName(member);
+            var cond = new Condition
+            {
+                Left = col,
+                Right = searchPattern,
+                Type = ExpressionType.Quote,
+                ConnectType = connectType
+            };
+            _conditions.Add(cond);
+        }
+
+        protected void AddCondition(Expression<Func<T, object>> predicate, ExpressionConnectType connectType)
+        {
+            ExpressionToString(predicate, connectType, _conditions);
+        }
+    }
+
+    public class SQLDelete<T> : SQLBase<T>
+    {
+        #region Конструкторы
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        public SQLDelete() : base()
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="tableName">Имя таблицы</param>
+        public SQLDelete(string tableName) : base(tableName)
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        public SQLDelete(NanoOrmMySQL orm) : base(orm)
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        /// <param name="tableName">Имя таблицы</param>
+        public SQLDelete(NanoOrmMySQL orm, string tableName) : base(orm, tableName)
+        {
+        }
+
+        #endregion Конструкторы
+
+        /// <summary>
+        /// Производит запрос к БД
+        /// </summary>
+        public void Exec()
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var query = ToString();
+            var res = _orm.ExecuteNoData(query);
+            if (res.HasError)
+                throw new Exception(res.Message);
+        }
+
+        /// <summary>
+        /// Возвращает строку запроса
+        /// </summary>
+        /// <returns>Строка запроса</returns>
+        public override string ToString()
+        {
+            var sbQuery =
+                new StringBuilder(string.Format("DELETE FROM\n `{0}` ", GetTableName(typeof(T))));
+            AddWhere(sbQuery);
+
+            return sbQuery.ToString();
+        }
+
+        /// <summary>
+        /// Добавляет начальное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLDelete<T> Where(Expression<Func<T, object>> predicate)
+        {
+            AddCondition(predicate, ExpressionConnectType.WHERE);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет начальное условие к запросу Паттерн поиска: % - The percent sign represents
+        /// zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLDelete<T> Where(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            AddCondition(predicate, ExpressionConnectType.WHERE, searchPattern);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLDelete<T> And(Expression<Func<T, object>> predicate)
+        {
+            AddCondition(predicate, ExpressionConnectType.AND);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу Паттерн поиска: % - The percent sign
+        /// represents zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLDelete<T> And(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            AddCondition(predicate, ExpressionConnectType.AND, searchPattern);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLDelete<T> Or(Expression<Func<T, object>> predicate)
+        {
+            AddCondition(predicate, ExpressionConnectType.OR);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу Паттерн поиска: % - The percent sign
+        /// represents zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLDelete<T> Or(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            AddCondition(predicate, ExpressionConnectType.OR, searchPattern);
+            return this;
+        }
+    }
 
     /// <summary>
     /// Класс запроса
     /// </summary>
     /// <typeparam name="T">Тип</typeparam>
-    public class SQLQuery<T> where T : class, new()
+    public class SQLSelect<T> : SQLBase<T> where T : class, new()
     {
-        private string _limit = string.Empty;
-        private readonly List<Condition> _conditions = new List<Condition>();
         private readonly List<OrderTerm> _orderTerms = new List<OrderTerm>();
         private readonly List<string> _groups = new List<string>();
-        private readonly NanoOrm _orm;
-        private readonly string _globalTableName = string.Empty;
+
+        private readonly List<string> _selects = new List<string>();
+
+        #region Конструкторы
 
         /// <summary>
         /// Конструктор
         /// </summary>
-        public SQLQuery()
+        public SQLSelect() : base()
         {
         }
 
@@ -1203,18 +650,16 @@ namespace NanoORMMySQL
         /// Конструктор
         /// </summary>
         /// <param name="tableName">Имя таблицы</param>
-        public SQLQuery(string tableName)
+        public SQLSelect(string tableName) : base(tableName)
         {
-            _globalTableName = tableName;
         }
 
         /// <summary>
         /// Конструктор
         /// </summary>
         /// <param name="orm">ОРМ</param>
-        public SQLQuery(NanoOrm orm)
+        public SQLSelect(NanoOrmMySQL orm) : base(orm)
         {
-            _orm = orm;
         }
 
         /// <summary>
@@ -1222,11 +667,11 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="orm">ОРМ</param>
         /// <param name="tableName">Имя таблицы</param>
-        public SQLQuery(NanoOrm orm, string tableName)
+        public SQLSelect(NanoOrmMySQL orm, string tableName) : base(orm, tableName)
         {
-            _orm = orm;
-            _globalTableName = tableName;
         }
+
+        #endregion Конструкторы
 
         /// <summary>
         /// Возвращает первый элемент запроса
@@ -1287,7 +732,8 @@ namespace NanoORMMySQL
         /// <returns>SQL запрос</returns>
         public override string ToString()
         {
-            var sbQuery = new StringBuilder(string.Format("SELECT * FROM\n `{0}`\n", GetTableName(typeof(T))));
+            var sbQuery =
+                new StringBuilder(string.Format("SELECT {1} FROM\n `{0}`\n", GetTableName(typeof(T)), GetSelects()));
             AddWhere(sbQuery);
 
             return AddOrderGroupLimit(sbQuery);
@@ -1382,74 +828,6 @@ namespace NanoORMMySQL
         }
 
         /// <summary>
-        /// Возвращает вариант стандарта, которому соответствует member
-        /// </summary>
-        /// <param name="member">Аргумент</param>
-        /// <returns></returns>
-        public object Variance(Expression<Func<T, object>> member)
-        {
-            if (_orm == null)
-                throw new Exception("Not set ORM");
-            var col = GetColName(member);
-            var query = string.Format("SELECT VARIANCE(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
-            var sqlRes = _orm.ExecuteData(query);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return sqlRes.Table.Rows[0].ItemArray[0];
-        }
-
-        /// <summary>
-        /// Возвращает среднеквадратичное отклонение значения в аргументе member
-        /// </summary>
-        /// <param name="member">Аргумент</param>
-        /// <returns></returns>
-        public object Std(Expression<Func<T, object>> member)
-        {
-            if (_orm == null)
-                throw new Exception("Not set ORM");
-            var col = GetColName(member);
-            var query = string.Format("SELECT STD(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
-            var sqlRes = _orm.ExecuteData(query);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return sqlRes.Table.Rows[0].ItemArray[0];
-        }
-
-        /// <summary>
-        /// Возвращает побитовое ИЛИ для всех битов в member
-        /// </summary>
-        /// <param name="member">Аргумент</param>
-        /// <returns></returns>
-        public object BitOr(Expression<Func<T, object>> member)
-        {
-            if (_orm == null)
-                throw new Exception("Not set ORM");
-            var col = GetColName(member);
-            var query = string.Format("SELECT BIT_OR(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
-            var sqlRes = _orm.ExecuteData(query);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return sqlRes.Table.Rows[0].ItemArray[0];
-        }
-
-        /// <summary>
-        /// Возвращает побитовое И для всех битов в member
-        /// </summary>
-        /// <param name="member">Аргумент</param>
-        /// <returns></returns>
-        public object BitAnd(Expression<Func<T, object>> member)
-        {
-            if (_orm == null)
-                throw new Exception("Not set ORM");
-            var col = GetColName(member);
-            var query = string.Format("SELECT BIT_AND(`{1}`) FROM `{0}` ", GetTableName(typeof(T)), col);
-            var sqlRes = _orm.ExecuteData(query);
-            if (sqlRes.HasError)
-                throw new Exception(sqlRes.Message);
-            return sqlRes.Table.Rows[0].ItemArray[0];
-        }
-
-        /// <summary>
         /// Возвращает среднее значение аргумента member
         /// </summary>
         /// <param name="member">Аргумент</param>
@@ -1457,7 +835,7 @@ namespace NanoORMMySQL
         public object Avg(Expression<Func<T, object>> member)
         {
             if (member == null)
-                throw new ArgumentNullException(nameof(member));
+                throw new Exception("member = null");
             if (_orm == null)
                 throw new Exception("Not set ORM");
             var query = string.Format("SELECT AVG(*) FROM `{0}` ", GetTableName(typeof(T)));
@@ -1525,9 +903,10 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="predicate">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Where(Expression<Func<T, object>> predicate)
+        public SQLSelect<T> Where(Expression<Func<T, object>> predicate)
         {
-            return Add(predicate, ExpressionConnectType.WHERE);
+            AddCondition(predicate, ExpressionConnectType.WHERE);
+            return this;
         }
 
         /// <summary>
@@ -1537,9 +916,10 @@ namespace NanoORMMySQL
         /// <param name="predicate">Условие</param>
         /// <param name="searchPattern">Паттерн поиска</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Where(Expression<Func<T, object>> predicate, string searchPattern)
+        public SQLSelect<T> Where(Expression<Func<T, object>> predicate, string searchPattern)
         {
-            return Add(predicate, ExpressionConnectType.WHERE, searchPattern);
+            AddCondition(predicate, ExpressionConnectType.WHERE, searchPattern);
+            return this;
         }
 
         /// <summary>
@@ -1547,9 +927,10 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="predicate">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> And(Expression<Func<T, object>> predicate)
+        public SQLSelect<T> And(Expression<Func<T, object>> predicate)
         {
-            return Add(predicate, ExpressionConnectType.AND);
+            AddCondition(predicate, ExpressionConnectType.AND);
+            return this;
         }
 
         /// <summary>
@@ -1559,9 +940,10 @@ namespace NanoORMMySQL
         /// <param name="predicate">Условие</param>
         /// <param name="searchPattern">Паттерн поиска</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> And(Expression<Func<T, object>> predicate, string searchPattern)
+        public SQLSelect<T> And(Expression<Func<T, object>> predicate, string searchPattern)
         {
-            return Add(predicate, ExpressionConnectType.AND, searchPattern);
+            AddCondition(predicate, ExpressionConnectType.AND, searchPattern);
+            return this;
         }
 
         /// <summary>
@@ -1569,9 +951,10 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="predicate">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Or(Expression<Func<T, object>> predicate)
+        public SQLSelect<T> Or(Expression<Func<T, object>> predicate)
         {
-            return Add(predicate, ExpressionConnectType.OR);
+            AddCondition(predicate, ExpressionConnectType.OR);
+            return this;
         }
 
         /// <summary>
@@ -1581,9 +964,10 @@ namespace NanoORMMySQL
         /// <param name="predicate">Условие</param>
         /// <param name="searchPattern">Паттерн поиска</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Or(Expression<Func<T, object>> predicate, string searchPattern)
+        public SQLSelect<T> Or(Expression<Func<T, object>> predicate, string searchPattern)
         {
-            return Add(predicate, ExpressionConnectType.OR, searchPattern);
+            AddCondition(predicate, ExpressionConnectType.OR, searchPattern);
+            return this;
         }
 
         /// <summary>
@@ -1591,7 +975,7 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="count">Кол-во</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Limit(int count)
+        public SQLSelect<T> Limit(int count)
         {
             _limit = string.Concat(" LIMIT ", count);
             return this;
@@ -1603,7 +987,7 @@ namespace NanoORMMySQL
         /// <param name="begin">Начальный индекс</param>
         /// <param name="count">Кол-во</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> Limit(int begin, int count)
+        public SQLSelect<T> Limit(int begin, int count)
         {
             _limit = string.Concat(" LIMIT ", begin, ",", count);
             return this;
@@ -1614,7 +998,7 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="members">Массив колонок</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> OrderBy(params Expression<Func<T, object>>[] members)
+        public SQLSelect<T> OrderBy(params Expression<Func<T, object>>[] members)
         {
             foreach (var member in members)
                 AddOrder(member, OrderType.ASC);
@@ -1626,7 +1010,7 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="member">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> OrderBy(Expression<Func<T, object>> member)
+        public SQLSelect<T> OrderBy(Expression<Func<T, object>> member)
         {
             return AddOrder(member, OrderType.ASC);
         }
@@ -1637,7 +1021,7 @@ namespace NanoORMMySQL
         /// <param name="member">Условие</param>
         /// <param name="orderType">Тип сортировки</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> OrderBy(Expression<Func<T, object>> member, OrderType orderType)
+        public SQLSelect<T> OrderBy(Expression<Func<T, object>> member, OrderType orderType)
         {
             return AddOrder(member, orderType);
         }
@@ -1647,20 +1031,9 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="member">Условие</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> GroupBy(Expression<Func<T, object>> member)
+        public SQLSelect<T> GroupBy(Expression<Func<T, object>> member)
         {
-            var body = member.Body as UnaryExpression;
-            if (body == null)
-            {
-                var mem = member.Body as MemberExpression;
-                if (mem == null)
-                    throw new Exception(string.Format("member not MemberExpression: {0}", member));
-                _groups.Add(mem.Member.Name);
-            }
-            else
-            {
-                _groups.Add(((MemberExpression)body.Operand).Member.Name);
-            }
+            _groups.Add(GetColName(member));
             return this;
         }
 
@@ -1669,7 +1042,7 @@ namespace NanoORMMySQL
         /// </summary>
         /// <param name="members">Массив колонок</param>
         /// <returns>Объект запроса</returns>
-        public SQLQuery<T> GroupBy(params Expression<Func<T, object>>[] members)
+        public SQLSelect<T> GroupBy(params Expression<Func<T, object>>[] members)
         {
             foreach (var member in members)
             {
@@ -1678,22 +1051,49 @@ namespace NanoORMMySQL
             return this;
         }
 
-        #region Private methods
-
-        private string GetColName(Expression<Func<T, object>> member)
+        /// <summary>
+        /// Ограничивает выборку только указаными столбцами
+        /// </summary>
+        /// <param name="member">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLSelect<T> Select(Expression<Func<T, object>> member)
         {
-            var body = member.Body as UnaryExpression;
-            if (body == null)
-            {
-                var mem = member.Body as MemberExpression;
-                if (mem == null)
-                    throw new Exception(string.Format("member not MemberExpression: {0}", member));
-                return mem.Member.Name;
-            }
-            return ((MemberExpression)body.Operand).Member.Name;
+            _selects.Add(GetColName(member));
+            return this;
         }
 
-        private SQLQuery<T> AddOrder(Expression<Func<T, object>> member, OrderType type)
+        /// <summary>
+        /// Создает индекс в таблице
+        /// </summary>
+        /// <param name="member">Условие</param>
+        /// <param name="indexName">
+        /// Название индекса. Если значение null или пустая строка, то будет создан индекс с именем ИмяТаблицы_ИмяСтолбца
+        /// </param>
+        public void CreateIndex(Expression<Func<T, object>> member, string indexName)
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var colName = GetColName(member);
+            var tableName = (string.IsNullOrEmpty(_globalTableName)) ? GetTableName(typeof(T)) : _globalTableName;
+            if (string.IsNullOrEmpty(indexName))
+                indexName = string.Concat(tableName, "_", colName);
+            _orm.CreateIndex(indexName, colName, tableName);
+        }
+
+        #region Private methods
+
+        private string GetSelects()
+        {
+            if (_selects.Count == 0)
+                return "*";
+            var sbSelects = new StringBuilder();
+            foreach (var column in _selects)
+                sbSelects.Append(column).Append(",");
+            var res = sbSelects.ToString();
+            return res.Remove(res.LastIndexOf(",", StringComparison.Ordinal), 1);
+        }
+
+        private SQLSelect<T> AddOrder(Expression<Func<T, object>> member, OrderType type)
         {
             var colName = GetColName(member);
             _orderTerms.Add(new OrderTerm
@@ -1704,103 +1104,11 @@ namespace NanoORMMySQL
             return this;
         }
 
-        private string ExpressionToString(Expression expression, ExpressionConnectType connectType)
-        {
-            switch (expression.NodeType)
-            {
-                case ExpressionType.Constant:
-                    if (expression.Type == typeof(DateTime))
-                    {
-                        return
-                           ((DateTime)((ConstantExpression)expression).Value).ConvertToUnixTimestamp()
-                               .ToString(CultureInfo.InvariantCulture);
-                    }
-
-                    if (expression.Type == typeof(bool))
-                        return ((bool)((ConstantExpression)expression).Value) ? "1" : "0";
-                    if (expression.Type == typeof(byte[]))
-                    {
-                        return string.Concat("'",
-                           Convert.ToBase64String((byte[])((ConstantExpression)expression).Value), "'");
-                    }
-
-                    if (expression.Type == typeof(string) || expression.Type == typeof(char)
-                        || expression.Type == typeof(Guid))
-                    {
-                        return string.Concat("'", ((ConstantExpression)expression).Value.ToString(), "'");
-                    }
-
-                    return ((ConstantExpression)expression).Value.ToString();
-
-                case ExpressionType.Convert:
-                    var c = expression as UnaryExpression;
-                    if (c != null)
-                    {
-                        if (c.Operand is BinaryExpression op)
-                        {
-                            var str1 = ExpressionToString(op.Left, connectType);
-                            var str2 = ExpressionToString(op.Right, connectType);
-                            var cond = new Condition
-                            {
-                                Left = str1,
-                                Right = str2,
-                                Type = op.NodeType,
-                                ConnectType = connectType
-                            };
-                            _conditions.Add(cond);
-                            return ToString();
-                        }
-                        throw new Exception(string.Format("Expression is not BinaryExpression: {0}", expression));
-                    }
-                    throw new Exception(string.Format("Expression is not UnaryExpression: {0}", expression));
-
-                case ExpressionType.Lambda:
-                    var l = expression as LambdaExpression;
-                    if (l == null)
-                        throw new Exception(string.Format("Expression is not LambdaExpression: {0}", expression));
-                    return ExpressionToString(l.Body, connectType);
-
-                case ExpressionType.Parameter:
-                    return ((ParameterExpression)expression).Name;
-
-                case ExpressionType.MemberAccess:
-                    var exp = expression as MemberExpression;
-                    if (exp == null)
-                        throw new Exception(string.Format("Expression is not MemberExpression: {0}", expression));
-                    if (exp.Expression != null && exp.Expression.NodeType == ExpressionType.Parameter)
-                        return exp.Member.Name;
-                    var value = Expression.Lambda(expression).Compile().DynamicInvoke();
-                    if (value is string || value is char || value is Guid)
-                        value = string.Concat("'", value.ToString(), "'");
-                    if (value is DateTime)
-                        value = ((DateTime)value).ConvertToUnixTimestamp();
-                    return value.ToString();
-
-                default:
-                    return ((MemberExpression)expression).Member.Name;
-            }
-        }
-
-        private SQLQuery<T> Add(Expression<Func<T, object>> predicate, ExpressionConnectType connectType)
-        {
-            ExpressionToString(predicate, connectType);
-            return this;
-        }
-
-        private SQLQuery<T> Add(Expression<Func<T, object>> member, ExpressionConnectType connectType,
-            string searchPattern)
-        {
-            var col = GetColName(member);
-            var cond = new Condition
-            {
-                Left = col,
-                Right = searchPattern,
-                Type = ExpressionType.Quote,
-                ConnectType = connectType
-            };
-            _conditions.Add(cond);
-            return this;
-        }
+        //private SQLSelect<T> AddCondition(Expression<Func<T, object>> predicate, ExpressionConnectType connectType)
+        //{
+        //    ExpressionToString(predicate, connectType, _conditions);
+        //    return this;
+        //}
 
         private string AddOrderGroupLimit(StringBuilder sbQuery)
         {
@@ -1825,38 +1133,193 @@ namespace NanoORMMySQL
             return sbQuery.ToString();
         }
 
-        private string GetTableName(Type type)
-        {
-            if (!string.IsNullOrEmpty(_globalTableName))
-                return _globalTableName;
-            var tableName = type.Name;
-            foreach (var attribute in type.GetCustomAttributes(false))
-            {
-                if (attribute.GetType() == typeof(TableName))
-                {
-                    tableName = ((TableName)attribute).Name;
-                    break;
-                }
-            }
-
-            return tableName;
-        }
-
-        private void AddWhere(StringBuilder sbQuery)
-        {
-            var where = _conditions.Find(c => c.ConnectType == ExpressionConnectType.WHERE);
-            if (where != null)
-            {
-                sbQuery.AppendLine(where.ToString());
-                _conditions.Remove(where);
-                foreach (var condition in _conditions)
-                    sbQuery.AppendLine(condition.ToString());
-
-                _conditions.Add(where);
-            }
-        }
-
         #endregion Private methods
+    }
+
+    public class SQLUpdate<T> : SQLBase<T> where T : class, new()
+    {
+        private readonly List<SetCondition> _sets = new List<SetCondition>();
+
+        #region Конструкторы
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        public SQLUpdate() : base()
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="tableName">Имя таблицы</param>
+        public SQLUpdate(string tableName) : base(tableName)
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        public SQLUpdate(NanoOrmMySQL orm) : base(orm)
+        {
+        }
+
+        /// <summary>
+        /// Конструктор
+        /// </summary>
+        /// <param name="orm">ОРМ</param>
+        /// <param name="tableName">Имя таблицы</param>
+        public SQLUpdate(NanoOrmMySQL orm, string tableName) : base(orm, tableName)
+        {
+        }
+
+        #endregion Конструкторы
+
+        /// <summary>
+        /// Производит запрос к БД
+        /// </summary>
+        public void Exec()
+        {
+            if (_orm == null)
+                throw new Exception("Not set ORM");
+            var query = ToString();
+            var res = _orm.ExecuteNoData(query);
+            if (res.HasError)
+                throw new Exception(res.Message);
+        }
+
+        /// <summary>
+        /// Устанавливает новые значения
+        /// </summary>
+        /// <param name="member">Свойство</param>
+        /// <param name="value">Новое значение</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> Set(Expression<Func<T, object>> member, object value)
+        {
+            _sets.Add(new SetCondition
+            {
+                ColName = GetColName(member),
+                Value = value.GetSQLValue()
+            });
+            return this;
+        }
+
+        /// <summary>
+        /// Возвращает строку запроса
+        /// </summary>
+        /// <returns>Строка запроса</returns>
+        public override string ToString()
+        {
+            var sbQuery =
+                new StringBuilder(string.Format("UPDATE\n`{0}`\n{1}\n", GetTableName(typeof(T)), GetSets()));
+            AddWhere(sbQuery);
+
+            return sbQuery.ToString();
+        }
+
+        /// <summary>
+        /// Добавляет начальное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> Where(Expression<Func<T, object>> predicate)
+        {
+            AddCondition(predicate, ExpressionConnectType.WHERE);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет начальное условие к запросу Паттерн поиска: % - The percent sign represents
+        /// zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> Where(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            AddCondition(predicate, ExpressionConnectType.WHERE, searchPattern);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> And(Expression<Func<T, object>> predicate)
+        {
+            AddCondition(predicate, ExpressionConnectType.AND);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу Паттерн поиска: % - The percent sign
+        /// represents zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> And(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            AddCondition(predicate, ExpressionConnectType.AND, searchPattern);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> Or(Expression<Func<T, object>> predicate)
+        {
+            AddCondition(predicate, ExpressionConnectType.OR);
+            return this;
+        }
+
+        /// <summary>
+        /// Добавляет дополнительное условие к запросу Паттерн поиска: % - The percent sign
+        /// represents zero, one, or multiple characters _ - The underscore represents a single character
+        /// </summary>
+        /// <param name="predicate">Условие</param>
+        /// <param name="searchPattern">Паттерн поиска</param>
+        /// <returns>Объект запроса</returns>
+        public SQLUpdate<T> Or(Expression<Func<T, object>> predicate, string searchPattern)
+        {
+            AddCondition(predicate, ExpressionConnectType.OR, searchPattern);
+            return this;
+        }
+
+        private string GetSets()
+        {
+            var sbQuery = new StringBuilder().AppendLine("SET");
+            foreach (var set in _sets)
+                sbQuery.Append(set.ToString()).AppendLine(",");
+            if (sbQuery.Length > 2)
+                sbQuery.Remove(sbQuery.Length - 2, 1);
+            return sbQuery.ToString();
+        }
+    }
+
+    /// <summary>
+    /// Класс условия присваивания
+    /// </summary>
+    public class SetCondition
+    {
+        /// <summary>
+        /// Имя столбца
+        /// </summary>
+        public string ColName { get; set; }
+
+        /// <summary>
+        /// Значение
+        /// </summary>
+        public string Value { get; set; }
+
+        /// <summary>
+        /// Возвращает в виде готовой строки
+        /// </summary>
+        public override string ToString() => $"`{ColName}` = {Value}";
     }
 
     /// <summary>

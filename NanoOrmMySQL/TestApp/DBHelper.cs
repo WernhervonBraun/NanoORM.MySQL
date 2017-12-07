@@ -2,7 +2,7 @@
 
 namespace NanoORMMySQL
 {
-    public sealed class DBHelper : NanoOrm
+    public sealed class DBHelper : NanoOrmMySQL
     {
         private static volatile DBHelper _instance;
         private static readonly object SyncRoot = new Object();
