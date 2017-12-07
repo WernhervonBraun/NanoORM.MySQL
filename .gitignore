@@ -65,3 +65,6 @@ NanoOrmMySQL/TestApp/bin/Debug/NanoOrmMySQL.dll.config
 NanoOrmMySQL/TestApp/bin/Debug/NanoOrmMySQL.pdb
 NanoOrmMySQL/TestApp/bin/Debug/TestApp.exe
 NanoOrmMySQL/TestApp/bin/Debug/TestApp.pdb
+/NanoOrmMySQL/NanoOrmMySQL/bin/Release
+/NanoOrmMySQL/NanoOrmMySQL/obj/Release
+/NanoOrmMySQL/TestApp/obj/Release

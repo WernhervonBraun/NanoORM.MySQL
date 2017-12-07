@@ -50,7 +50,7 @@ namespace NanoORMMySQL
         /// Не присваивает вставляемому объекту PrimaryKey.
         /// </summary>
         /// <remarks>Ускоряет вставку.</remarks>
-        public bool NoGetLastID { get; set; } = false;
+        public bool NoGetLastID { get; set; }
 
         #endregion Properties
 
@@ -1236,6 +1236,11 @@ namespace NanoORMMySQL
             return Math.Floor(diff.TotalSeconds);
         }
 
+        /// <summary>
+        /// Возвращает подготовленную строку
+        /// </summary>
+        /// <param name="value"></param>
+        /// <returns></returns>
         public static string GetSQLValue(this object value)
         {
             if (value is string || value is char || value is Guid)
@@ -1250,11 +1255,30 @@ namespace NanoORMMySQL
 
     #endregion Extension
 
+    /// <summary>
+    /// Базовый класс запроса
+    /// </summary>
+    /// <typeparam name="T">Тип</typeparam>
     public abstract class SQLBase<T>
     {
+        /// <summary>
+        /// ОRM
+        /// </summary>
         protected NanoOrmMySQL _orm;
+
+        /// <summary>
+        /// Строки Limit
+        /// </summary>
         protected string _limit = string.Empty;
+
+        /// <summary>
+        /// Условия
+        /// </summary>
         protected List<Condition> _conditions = new List<Condition>();
+
+        /// <summary>
+        /// Имя таблицы
+        /// </summary>
         protected string _globalTableName = string.Empty;
 
         #region Конструкторы
@@ -1458,6 +1482,10 @@ namespace NanoORMMySQL
         }
     }
 
+    /// <summary>
+    /// Класс запроса Delete
+    /// </summary>
+    /// <typeparam name="T">Тип</typeparam>
     public class SQLDelete<T> : SQLBase<T>
     {
         #region Конструкторы
@@ -1596,7 +1624,7 @@ namespace NanoORMMySQL
     }
 
     /// <summary>
-    /// Класс запроса
+    /// Класс запроса Select
     /// </summary>
     /// <typeparam name="T">Тип</typeparam>
     public class SQLSelect<T> : SQLBase<T> where T : class, new()
@@ -2105,6 +2133,10 @@ namespace NanoORMMySQL
         #endregion Private methods
     }
 
+    /// <summary>
+    /// Класс запроса Update
+    /// </summary>
+    /// <typeparam name="T">Тип</typeparam>
     public class SQLUpdate<T> : SQLBase<T> where T : class, new()
     {
         private readonly List<SetCondition> _sets = new List<SetCondition>();
