@@ -1,10 +1,11 @@
 ﻿/*
-    ORM for MySQL
-    Powered By Aleksandr Belov 2017
-    wernher.pad@gmail.com
+	ORM for MySQL
+	Powered By Aleksandr Belov 2017
+	wernher.pad@gmail.com
 */
 
 using MySql.Data.MySqlClient;
+using MySql.Data.Types;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -818,7 +819,13 @@ namespace NanoORMMySQL
         private object ConvertValue(PropertyInfo property, object value)
         {
             if (property.PropertyType == typeof(DateTime))
-                value = ((DateTime)value).ConvertToUnixTimestamp().ToString(CultureInfo.InvariantCulture);
+            {
+                //2015-11-05 14:29:36
+                value = ((DateTime)value).ToString("yyyy-MM-dd hh:mm:ss");
+                //var temp = (MySqlDateTime)value;
+                //value = (DateTime)temp;
+            }
+                
             if (property.PropertyType == typeof(byte[]))
                 value = Convert.ToBase64String((byte[])value);
             if (property.PropertyType == typeof(bool))
@@ -876,7 +883,7 @@ namespace NanoORMMySQL
             if (property.PropertyType == typeof(double))
                 return "DOUBLE";
             if (property.PropertyType == typeof(DateTime))
-                return "DOUBLE";
+                return "DATETIME";
             if (property.PropertyType == typeof(byte[]))
                 return "LONGTEXT";
             if (property.PropertyType == typeof(Guid))
@@ -1276,7 +1283,8 @@ namespace NanoORMMySQL
         public static void SetPropertyValue(this PropertyInfo property, object val, object obj)
         {
             if (property.PropertyType == typeof(DateTime))
-                property.SetValue(obj, ((double)val).ConvertFromUnixTimestamp(), null);
+                //property.SetValue(obj, ((double)val).ConvertFromUnixTimestamp(), null);
+                property.SetValue(obj, (DateTime)val, null);
             else if (property.PropertyType == typeof(bool))
                 property.SetValue(obj, val.ToString() == "1", null);
             else if (property.PropertyType == typeof(int))
